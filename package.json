@@ -1,0 +1,27 @@
+{
+  "name": "arcremit",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build -w @arcremit/shared && npm run build -w @arcremit/chain && npm run build -w @arcremit/db && npm run build -w @arcremit/api && npm run build -w @arcremit/web && npm run build:landing",
+    "build:landing": "npm install --prefix apps/landing --no-audit --no-fund --legacy-peer-deps && npm run build --prefix apps/landing",
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @arcremit/api\" \"npm run dev -w @arcremit/web\"",
+    "dev:landing": "npm run dev --prefix apps/landing",
+    "dev:api": "npm run dev -w @arcremit/api",
+    "dev:web": "npm run dev -w @arcremit/web",
+    "db:generate": "npm run generate -w @arcremit/db",
+    "db:push": "npm run push -w @arcremit/db",
+    "db:studio": "npm run studio -w @arcremit/db"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

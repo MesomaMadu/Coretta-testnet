@@ -1,0 +1,26 @@
+{
+  "name": "@arcremit/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@arcremit/chain": "*",
+    "@arcremit/db": "*",
+    "@arcremit/shared": "*",
+    "@fastify/cors": "^11.0.0",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "viem": "^2.23.12",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

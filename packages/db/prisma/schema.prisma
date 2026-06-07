@@ -1,0 +1,272 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  kycTier   Int      @default(1)
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  identities Identity[]
+  wallets    Wallet[]
+  sent       Transfer[] @relation("SenderTransfers")
+  received   Transfer[] @relation("RecipientTransfers")
+  sessions   Session[]
+  limits     UserLimit?
+
+  aiActors   AiActor[]
+}
+
+model Identity {
+  id              String   @id @default(cuid())
+  userId          String
+  type            String
+  normalizedValue String
+  verifiedAt      DateTime?
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([type, normalizedValue])
+  @@index([userId])
+}
+
+model Wallet {
+  id              String   @id @default(cuid())
+  userId          String
+  chainId         Int      @default(5042002)
+  scaAddress      String   @unique
+  ownerAddress    String?
+  ownerKeyRef     String?
+  vendor          String   @default("circle_modular")
+  status          String   @default("ACTIVE")
+  counterfactual  Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sentTransfers     Transfer[] @relation("SenderWallet")
+  receivedTransfers Transfer[] @relation("RecipientWallet")
+
+  @@index([userId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model UserLimit {
+  userId            String @id
+  dailySendMicro    BigInt @default(500000000)
+  dailySentMicro    BigInt @default(0)
+  dailyTxCount      Int    @default(0)
+  dailyTxLimit      Int    @default(50)
+  lastResetAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Transfer {
+  id                 String   @id @default(cuid())
+  idempotencyKey     String   @unique
+  senderWalletId     String
+  recipientWalletId  String
+  amountMicro        BigInt
+  state              String   @default("REQUESTED")
+  riskScore          Int      @default(0)
+  policyReason       String?
+  userOpHash         String?
+  txHash             String?
+  failureReason      String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  senderWallet    Wallet @relation("SenderWallet", fields: [senderWalletId], references: [id])
+  recipientWallet Wallet @relation("RecipientWallet", fields: [recipientWalletId], references: [id])
+  sender          User   @relation("SenderTransfers", fields: [senderUserId], references: [id])
+  recipient       User   @relation("RecipientTransfers", fields: [recipientUserId], references: [id])
+  senderUserId    String
+  recipientUserId String
+
+  @@index([senderWalletId, createdAt])
+  @@index([recipientWalletId, createdAt])
+  @@index([state])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model FraudSignal {
+  id        String   @id @default(cuid())
+  userId    String?
+  transferId String?
+  signal    String
+  score     Int
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+/// =========================
+/// ArcRemit AI infrastructure
+/// =========================
+///
+/// Privacy & safety notes:
+/// - All AI data is scoped to an AiActor (either linked to User or pseudonymous)
+/// - No secrets should ever be stored (seed phrases, private keys, auth tokens)
+/// - Memory is advisory only and MUST NOT bypass confirmation + wallet approval
+
+model AiActor {
+  id        String   @id @default(cuid())
+  userId    String?
+  kind      String   @default("user") // user | pseudonymous
+  actorHash String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user          User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversations AiConversation[]
+  messages      AiMessage[]
+  feedback      AiFeedback[]
+  memories      AiMemory[]
+  preferences   AiPreference[]
+  interactions  AiInteraction[]
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model AiConversation {
+  id        String   @id @default(cuid())
+  actorId   String
+  title     String?
+  status    String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  actor    AiActor    @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  messages AiMessage[]
+
+  @@index([actorId, createdAt])
+  @@index([deletedAt])
+}
+
+model AiMessage {
+  id             String   @id @default(cuid())
+  actorId        String
+  conversationId String?
+  role           String   // user | assistant | system
+  contentEnc     String   // encrypted content (AES-GCM envelope)
+  contentSummary String?  // safe, redactable summary for UI/search
+  clientMessageId String? // optional client id for dedupe
+  createdAt      DateTime @default(now())
+  deletedAt      DateTime?
+
+  actor        AiActor         @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  conversation AiConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  feedback     AiFeedback[]
+
+  @@index([actorId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([clientMessageId])
+}
+
+model AiFeedback {
+  id           String   @id @default(cuid())
+  actorId      String
+  messageId    String?
+  rating       Int?     // 1 (up), -1 (down)
+  kind         String   // thumbs | report
+  issueType    String?  // WRONG_RECIPIENT | WRONG_AMOUNT | WRONG_ASSET | MISUNDERSTOOD_INTENT | POOR_RESPONSE | OTHER
+  commentEnc   String?  // encrypted freeform comment
+  contextJson  String?  // conversation context, preview metadata, etc.
+  createdAt    DateTime @default(now())
+  resolvedAt   DateTime?
+  deletedAt    DateTime?
+
+  actor   AiActor   @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  message AiMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt])
+  @@index([kind, createdAt])
+  @@index([issueType])
+}
+
+model AiMemory {
+  id          String   @id @default(cuid())
+  actorId     String
+  category    String   // RECIPIENT | ASSET_PREF | PATTERN | STYLE | SAFETY | OTHER
+  key         String?  // optional key like "last_recipient"
+  summary     String   // user-visible, editable summary (no secrets)
+  dataJson    String?  // structured payload (recipient/email/etc)
+  confidence  Int      @default(50) // 0..100
+  source      String   @default("explicit") // explicit | inferred | feedback
+  timesUsed   Int      @default(0)
+  lastUsedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+
+  actor AiActor @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([actorId, updatedAt])
+  @@index([category])
+  @@index([key])
+  @@index([deletedAt])
+}
+
+model AiPreference {
+  id        String   @id @default(cuid())
+  actorId   String
+  key       String
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  actor AiActor @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@unique([actorId, key])
+  @@index([deletedAt])
+}
+
+model AiInteraction {
+  id              String   @id @default(cuid())
+  actorId          String
+  conversationId   String?
+  userMessageId    String?
+  assistantMessageId String?
+  intentJson       String?
+  previewHash      String?
+  outcome          String   @default("UNKNOWN") // SUCCESS | FAILED | ABANDONED | UNKNOWN
+  createdAt        DateTime @default(now())
+
+  actor AiActor @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([actorId, createdAt])
+  @@index([outcome])
+}

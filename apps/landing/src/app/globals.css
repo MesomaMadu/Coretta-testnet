@@ -1,0 +1,167 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-raleway), ui-sans-serif, system-ui, sans-serif;
+  --color-coretta-violet: #7c4dff;
+  --color-coretta-purple: #8f5cff;
+  --color-coretta-navy: #153e75;
+  --color-coretta-blue: #3b82f6;
+  --color-coretta-success: #16c784;
+  --color-coretta-warning: #f59e0b;
+  --color-coretta-error: #ef4444;
+}
+
+/* Coretta — dark mode only */
+:root {
+  --ar-bg: #05070f;
+  --ar-bg-secondary: #0b1020;
+  --ar-bg-elevated: #111827;
+  --ar-surface: #131d32;
+  --ar-fg: #f8fafc;
+  --ar-fg-muted: rgba(248, 250, 252, 0.58);
+  --ar-fg-subtle: rgba(248, 250, 252, 0.38);
+  --ar-border: rgba(255, 255, 255, 0.06);
+  --ar-input-bg: rgba(255, 255, 255, 0.04);
+  --ar-overlay: rgba(5, 7, 15, 0.75);
+  --ar-grid: rgba(255, 255, 255, 0.03);
+  --ar-vignette: rgba(5, 7, 15, 0.82);
+  --ar-accent: #7c4dff;
+  --ar-accent-soft: #8f5cff;
+  --ar-navy: #153e75;
+  --ar-blue: #3b82f6;
+  --ar-success: #16c784;
+  --ar-warning: #f59e0b;
+  --ar-error: #ef4444;
+  --damian-workspace: #070a14;
+  --damian-surface: #101827;
+  --damian-bubble: #153e75;
+  --damian-user-bubble: #1b2336;
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+  background: var(--ar-bg);
+}
+
+body {
+  font-family: var(--font-raleway), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 300;
+  background: var(--ar-bg);
+  color: var(--ar-fg);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-open-sans), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+}
+
+section header h2 + p,
+.subheading-text {
+  font-family: var(--font-cabin), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 500;
+  font-style: italic;
+}
+
+/* Hero headline */
+.hero-headline-gradient {
+  background-image: linear-gradient(
+    90deg,
+    #8f5cff 0%,
+    #7c4dff 35%,
+    #3b82f6 65%,
+    #8f5cff 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Damian AI workspace */
+.damian-chat-bg {
+  background: var(--damian-workspace);
+}
+
+.damian-bubble-assistant {
+  background: var(--damian-bubble);
+  box-shadow: 0 4px 24px rgba(21, 62, 117, 0.22);
+  color: #f8fafc;
+}
+
+.damian-bubble-user {
+  background: var(--damian-user-bubble);
+  color: #f1f5f9;
+}
+
+.damian-input-surface {
+  background: var(--damian-surface);
+  border-color: var(--ar-border);
+}
+
+.damian-input-surface:focus-within {
+  border-color: rgba(124, 77, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(124, 77, 255, 0.12);
+}
+
+/* Glass navigation */
+.coretta-glass-nav {
+  background: rgba(11, 16, 32, 0.72);
+  border: 1px solid var(--ar-border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+[lang="zh"],
+[lang="ja"],
+.locale-zh,
+.locale-ja {
+  font-family: var(--font-noto-sc), var(--font-noto-jp), var(--font-sans);
+}
+
+[lang="hi"],
+.locale-hi {
+  font-family: var(--font-noto-hi), var(--font-sans);
+}
+
+/* Network graph — SVG-safe animations only (no CSS transform on SVG nodes) */
+@keyframes network-dash-flow {
+  to {
+    stroke-dashoffset: -28;
+  }
+}
+
+@keyframes network-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.28;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.network-dash-flow {
+  stroke-dasharray: 6 6;
+  animation: network-dash-flow 1.2s linear infinite;
+}
+
+.network-glow-ring {
+  animation: network-glow-pulse 2.8s ease-in-out infinite;
+}
+
+.network-graph .network-node {
+  transition: filter 150ms ease;
+  cursor: default;
+}
+
+.network-graph .network-node:hover {
+  filter: drop-shadow(0 0 12px var(--node-glow, #7c4dff));
+}

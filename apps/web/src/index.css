@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --color-brand: #22d3ee;
+  --color-brand-dark: #0891b2;
+  --color-surface: #0f172a;
+  --color-card: #1e293b;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: linear-gradient(165deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+  min-height: 100dvh;
+  color: #f8fafc;
+  -webkit-font-smoothing: antialiased;
+}
