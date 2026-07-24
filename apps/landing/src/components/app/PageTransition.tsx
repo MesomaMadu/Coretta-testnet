@@ -13,10 +13,11 @@ export default function PageTransition({ viewKey, children }: Props) {
     <AnimatePresence mode="wait">
       <motion.div
         key={viewKey}
-        initial={{ opacity: 0, y: 10, filter: "blur(4px)" }}
-        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-        exit={{ opacity: 0, y: -6, filter: "blur(3px)" }}
-        transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+        style={{ willChange: "opacity, transform" }}
         className="flex h-full min-h-0 flex-1 flex-col"
       >
         {children}

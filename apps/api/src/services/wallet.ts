@@ -11,20 +11,26 @@ import { config } from "../config.js";
 import {
   normalizeEmail,
   normalizePhone,
+  normalizeWalletAddress,
   type IdentityType,
 } from "@arcremit/shared";
 
 const client = createArcPublicClient();
 
+function normalizeIdentity(type: IdentityType, value: string): string {
+  if (type === "email") return normalizeEmail(value);
+  if (type === "phone") return normalizePhone(value);
+  return normalizeWalletAddress(value);
+}
+
 export async function findUserByIdentity(
   type: IdentityType,
   value: string,
 ) {
-  const normalized =
-    type === "email" ? normalizeEmail(value) : normalizePhone(value);
+  const normalized = normalizeIdentity(type, value);
   const identity = await prisma.identity.findUnique({
     where: { type_normalizedValue: { type, normalizedValue: normalized } },
-    include: { user: { include: { wallets: true, limits: true } } },
+    include: { user: { include: { wallets: true, limits: true, identities: true } } },
   });
   return identity?.user ?? null;
 }
@@ -33,8 +39,7 @@ export async function provisionUserWithWallet(
   type: IdentityType,
   value: string,
 ) {
-  const normalized =
-    type === "email" ? normalizeEmail(value) : normalizePhone(value);
+  const normalized = normalizeIdentity(type, value);
 
   const existing = await prisma.identity.findUnique({
     where: { type_normalizedValue: { type, normalizedValue: normalized } },
@@ -62,7 +67,8 @@ export async function provisionUserWithWallet(
       wallets: {
         create: {
           scaAddress: account.address,
-          ownerAddress,
+          // For EOA wallet login, record the verified EOA as ownerAddress.
+          ownerAddress: type === "wallet" ? normalized : ownerAddress,
           ownerKeyRef: keyRef,
           counterfactual: false,
           vendor: "safe_4337_v07",
@@ -79,7 +85,11 @@ export async function provisionUserWithWallet(
     data: {
       actorId: user.id,
       action: "WALLET_PROVISIONED",
-      metadata: JSON.stringify({ scaAddress: account.address, type }),
+      metadata: JSON.stringify({
+        scaAddress: account.address,
+        type,
+        eoa: type === "wallet" ? normalized : undefined,
+      }),
     },
   });
 
@@ -90,6 +100,38 @@ export async function resolveRecipientWallet(
   type: IdentityType,
   value: string,
 ) {
+  if (type === "wallet") {
+    const normalized = normalizeWalletAddress(value);
+
+    // Existing EOA identity (connected-wallet account)
+    let user = await findUserByIdentity("wallet", normalized);
+    if (user?.wallets[0]) {
+      return { user, wallet: user.wallets[0] };
+    }
+
+    // Existing SCA or owner EOA on a Wallet row
+    const byAddress = await prisma.wallet.findFirst({
+      where: {
+        OR: [
+          { scaAddress: { equals: normalized } },
+          { ownerAddress: { equals: normalized } },
+        ],
+      },
+      include: {
+        user: { include: { wallets: true, limits: true, identities: true } },
+      },
+    });
+    if (byAddress?.user) {
+      return { user: byAddress.user, wallet: byAddress };
+    }
+
+    // First-time EOA recipient: provision smart wallet bound to that address
+    user = await provisionUserWithWallet("wallet", normalized);
+    const wallet = user.wallets[0];
+    if (!wallet) throw new Error("WALLET_MISSING");
+    return { user, wallet };
+  }
+
   let user = await findUserByIdentity(type, value);
   if (!user) {
     user = await provisionUserWithWallet(type, value);

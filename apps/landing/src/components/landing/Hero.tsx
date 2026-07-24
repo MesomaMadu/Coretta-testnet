@@ -86,8 +86,7 @@ export default function Hero() {
             className="subheading-text mt-6 max-w-2xl text-base leading-relaxed text-[var(--ar-fg-muted)] md:text-lg"
           >
             Coretta combines AI, smart accounts, and account abstraction to make global payments
-            feel simple. Send, receive, or exchange digital dollars through a conversational
-            interface without exposing users to blockchain complexity.
+            feel simple. Send, swap and receive assets instantly through Damian AI without exposing users to blockchain complexity.
           </motion.p>
 
           <motion.div
@@ -108,7 +107,7 @@ export default function Hero() {
               }}
             >
               <Button variant="glow" size="lg" className="w-full" asChild>
-                <Link href="/app">Go-to-app</Link>
+                <Link href="/app">Launch App</Link>
               </Button>
             </motion.div>
 

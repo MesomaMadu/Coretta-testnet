@@ -9,3 +9,9 @@ dist
 coverage
 .next
 .vite
+
+# Local secrets / tooling
+recovery/
+.cursor/
+.claude/
+

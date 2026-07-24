@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiFetch, setApiToken } from "@/lib/api";
@@ -11,36 +11,81 @@ interface Props {
   onSuccess?: (email: string) => void;
 }
 
+const RESEND_COOLDOWN = 30;
+
 export default function EmailAuthModal({ open, onClose, onSuccess }: Props) {
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [step, setStep] = useState<"email" | "otp">("email");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resendIn, setResendIn] = useState(0);
+  const [attempts, setAttempts] = useState(0);
+
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const t = window.setInterval(() => setResendIn((s) => Math.max(0, s - 1)), 1000);
+    return () => window.clearInterval(t);
+  }, [resendIn]);
 
   if (!open) return null;
 
-  const handleEmail = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.includes("@")) return;
-    setStep("otp");
+  const sendCode = async () => {
+    setLoading(true);
     setError(null);
+    try {
+      const res = await apiFetch<{ ok: boolean; devCode?: string }>("/v1/auth/otp/send", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+        auth: false,
+      });
+      setStep("otp");
+      if (res.devCode) {
+        setOtp(res.devCode);
+      }
+      setResendIn(RESEND_COOLDOWN);
+      setAttempts(0);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Could not send code";
+      if (msg.includes("429") || msg.includes("RESEND_COOLDOWN")) {
+        setError("Please wait before requesting another code.");
+      } else if (msg.includes("503") || msg.includes("EMAIL_PROVIDER")) {
+        setError("Email delivery is not configured yet. Contact support or try wallet sign-in.");
+      } else {
+        setError("Could not send verification code. Check your email and try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    if (!valid) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    await sendCode();
   };
 
   const handleOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (otp.length < 4) return;
+    if (otp.length < 6) return;
+    if (attempts >= 5) {
+      setError("Too many attempts. Request a new code.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      // NOTE: This is a dev-friendly login. Production should use real OTP via Privy/Clerk/Dynamic.
       const res = await apiFetch<{
         token: string;
         expiresAt: string;
         user: { id: string; walletAddress?: string | null };
-      }>("/v1/auth/login", {
+      }>("/v1/auth/otp/verify", {
         method: "POST",
-        body: JSON.stringify({ type: "email", value: email }),
+        body: JSON.stringify({ email, code: otp }),
         auth: false,
       });
       setApiToken(res.token);
@@ -48,8 +93,10 @@ export default function EmailAuthModal({ open, onClose, onSuccess }: Props) {
       onClose();
       setStep("email");
       setOtp("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      setEmail("");
+    } catch {
+      setAttempts((a) => a + 1);
+      setError("Invalid or expired code. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -65,10 +112,6 @@ export default function EmailAuthModal({ open, onClose, onSuccess }: Props) {
           </button>
         </div>
 
-        <p className="mb-4 text-xs text-white/45">
-          Email sign-in enables persistent memory & feedback. Production should use real OTP.
-        </p>
-
         {error && (
           <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
             {error}
@@ -79,36 +122,49 @@ export default function EmailAuthModal({ open, onClose, onSuccess }: Props) {
           <form onSubmit={handleEmail} className="space-y-4">
             <label className="block">
               <span className="mb-1 flex items-center gap-2 text-sm text-white/70">
-                <Mail className="h-4 w-4" /> Email
+                <Mail className="h-4 w-4" /> Enter your email address
               </span>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-white outline-none focus:border-cyan-400/50"
+                className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-white outline-none focus:border-[#8F5CFF]/50"
                 placeholder="you@example.com"
                 required
               />
             </label>
-            <Button type="submit" variant="primary" className="w-full">
-              Send code
+            <Button type="submit" variant="primary" className="w-full" disabled={loading}>
+              {loading ? "Sending…" : "Continue"}
             </Button>
           </form>
         ) : (
           <form onSubmit={handleOtp} className="space-y-4">
-            <p className="text-sm text-white/60">Code sent to {email}</p>
+            <p className="text-sm text-white/60">
+              Enter the verification code sent to{" "}
+              <span className="text-white">{email}</span>
+            </p>
             <input
               type="text"
               inputMode="numeric"
               value={otp}
-              onChange={(e) => setOtp(e.target.value)}
-              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-center font-mono text-lg tracking-widest text-white"
-              placeholder="000000"
+              onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-center font-mono text-lg tracking-[0.4em] text-white"
+              placeholder="••••••"
               maxLength={6}
+              autoComplete="one-time-code"
             />
+            <p className="text-center text-[10px] text-white/35">Code expires in 5 minutes</p>
             <Button type="submit" variant="primary" className="w-full" disabled={loading}>
-              {loading ? "Signing in…" : "Verify & Sign in"}
+              {loading ? "Verifying…" : "Verify"}
             </Button>
+            <button
+              type="button"
+              disabled={resendIn > 0 || loading}
+              onClick={() => void sendCode()}
+              className="w-full text-xs text-white/45 hover:text-white disabled:opacity-40"
+            >
+              {resendIn > 0 ? `Resend in ${resendIn}s` : "Resend code"}
+            </button>
           </form>
         )}
       </div>

@@ -222,9 +222,9 @@ export default function NetworkVisualization() {
   return (
     <SectionShell
       id="network"
-      eyebrow="Network"
-      title="An intelligent financial network"
-      subtitle="Smart wallets, paymaster sponsorship, bundler execution, and Arc settlement — orchestrated in real time."
+      eyebrow="Arc architecture"
+      title="USDC-native settlement on Arc"
+      subtitle="ERC-4337 smart wallets, Circle Paymaster sponsorship, Pimlico bundler execution, and sub-second finality on Arc Testnet (chain 5042002) — fees paid in USDC."
     >
       <motion.div
         ref={ref}
@@ -327,24 +327,28 @@ export default function NetworkVisualization() {
         </div>
 
         <div className="relative z-10 mt-6 flex flex-wrap justify-center gap-3 sm:mt-8">
-          {["Live routing", "Paymaster gas", "Bundler execution", "Arc finality"].map(
-            (label, i) => (
+          {[
+            "USDC gas (Arc)",
+            "ERC-4337 wallets",
+            "Circle Paymaster",
+            "Pimlico bundler",
+            "Sub-second finality",
+          ].map((label, i) => (
+            <motion.span
+              key={label}
+              initial={{ opacity: 0, y: 8 }}
+              animate={inView ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 }}
+              transition={{ delay: 0.4 + i * 0.08, ease: smoothEase, duration: 0.6 }}
+              className="rounded-full border border-[var(--ar-border)] bg-[var(--ar-input-bg)] px-3 py-1 text-[11px] font-medium text-[var(--ar-fg-muted)]"
+            >
               <motion.span
-                key={label}
-                initial={{ opacity: 0, y: 8 }}
-                animate={inView ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 }}
-                transition={{ delay: 0.4 + i * 0.08, ease: smoothEase, duration: 0.6 }}
-                className="rounded-full border border-[var(--ar-border)] bg-[var(--ar-input-bg)] px-3 py-1 text-[11px] font-medium text-[var(--ar-fg-muted)]"
-              >
-                <motion.span
-                  className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-[#16C784]"
-                  animate={{ opacity: [0.4, 1, 0.4] }}
-                  transition={{ ...loopSlow, delay: i * 0.4 }}
-                />
-                {label}
-              </motion.span>
-            ),
-          )}
+                className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-[#16C784]"
+                animate={{ opacity: [0.4, 1, 0.4] }}
+                transition={{ ...loopSlow, delay: i * 0.4 }}
+              />
+              {label}
+            </motion.span>
+          ))}
         </div>
       </motion.div>
     </SectionShell>

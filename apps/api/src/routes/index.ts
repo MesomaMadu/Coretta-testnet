@@ -8,6 +8,18 @@ import {
   getWalletBalanceMicro,
   findUserByIdentity,
 } from "../services/wallet.js";
+import { createOtp, verifyOtp, createRebindOtp, verifyRebindOtp } from "../services/otp.js";
+import { sendOtpEmail } from "../services/email.js";
+import {
+  activateSmartWallet,
+  bindPrimaryWallet,
+  consumeRebindToken,
+  getWalletBindingStatus,
+  issueRebindToken,
+  replacePrimaryWallet,
+} from "../services/wallet-binding.js";
+import { createAuditEvent } from "../services/audit.js";
+import { touchPresence, getActiveCount } from "../services/presence.js";
 import {
   createConversation,
   createFeedback,
@@ -23,8 +35,283 @@ import {
   clearMemories,
 } from "../services/ai.js";
 
+import {
+  anonymousUsageMetrics,
+  getUserUsageMetrics,
+  getWalletUsageMetrics,
+  incrementUsage,
+  trackUsageEvent,
+} from "../services/limits.js";
+import { determineOptimalRoute } from "../services/router.js";
+import { recordRiskEvent } from "../services/risk.js";
+import { authenticateWalletOwnership } from "../services/wallet-auth.js";
+import { normalizeWalletAddress } from "@arcremit/shared";
+
 export async function registerRoutes(app: FastifyInstance) {
   app.get("/health", async () => ({ ok: true, service: "arcremit-api" }));
+
+  app.get("/v1/auth/email-status", async (_req, reply) => {
+    const apiKeyConfigured = Boolean(process.env.EMAIL_PROVIDER_API_KEY);
+    const fromAddress = process.env.EMAIL_FROM_ADDRESS || "Coretta Verification <onboarding@resend.dev>";
+    const devMode = process.env.DEV_MODE === "true";
+    return reply.send({
+      configured: apiKeyConfigured,
+      provider: apiKeyConfigured ? "Resend API" : (devMode ? "Dev Console Simulation (DEV_MODE=true)" : "None"),
+      fromAddress,
+      devMode,
+      reason: !apiKeyConfigured
+        ? "EMAIL_PROVIDER_API_KEY is not configured in environment variables (.env). In development mode (DEV_MODE=true), OTP codes are output directly to the server console log and dev response payload."
+        : `Email provider configured via Resend with sender ${fromAddress}. Note: Default Resend onboarding sender only delivers to registered Resend account owner unless a custom domain is verified.`
+    });
+  });
+
+  app.get("/v1/user/usage", async (req, reply) => {
+    const user = await resolveSession(req.headers.authorization);
+    const query = (req.query ?? {}) as { walletAddress?: string };
+    let walletAddress: string | null = null;
+    if (query.walletAddress) {
+      try {
+        walletAddress = normalizeWalletAddress(query.walletAddress);
+      } catch {
+        return reply.code(400).send({
+          code: "INVALID_WALLET_ADDRESS",
+          message: "walletAddress must be a 0x-prefixed 40-hex EOA.",
+        });
+      }
+    }
+
+    if (walletAddress) {
+      if (!user) {
+        return reply.code(401).send({
+          code: "UNAUTHORIZED",
+          message: "Sign ownership to view live wallet usage.",
+        });
+      }
+      const walletIdentity = user.identities.find((i) => i.type === "wallet");
+      const allowed =
+        walletIdentity?.normalizedValue === walletAddress ||
+        user.wallets.some(
+          (w) =>
+            w.ownerAddress?.toLowerCase() === walletAddress ||
+            w.scaAddress.toLowerCase() === walletAddress,
+        );
+      if (!allowed) {
+        return reply.code(403).send({
+          code: "WALLET_NOT_LINKED",
+          message: "This session is not authorized for that wallet address.",
+        });
+      }
+      const metrics = await getWalletUsageMetrics(walletAddress, user);
+      return reply.send(metrics);
+    }
+
+    if (!user) {
+      return reply.send(anonymousUsageMetrics());
+    }
+    const metrics = await getUserUsageMetrics(user.id);
+    return reply.send(metrics);
+  });
+
+  app.get("/v1/routes/estimate", async (req, reply) => {
+    const query = (req.query ?? {}) as { asset?: string; amount?: string; networkId?: string };
+    const user = await resolveSession(req.headers.authorization);
+    const route = await determineOptimalRoute({
+      senderUserId: user?.id,
+      senderAsset: query.asset ?? "USDC",
+      recipientAsset: query.asset ?? "USDC",
+      targetNetworkId: query.networkId,
+      amount: query.amount ?? "100.00",
+    });
+    return reply.send(route);
+  });
+
+  app.post("/v1/presence/ping", async (req, reply) => {
+    const body = z.object({ sessionId: z.string().min(8).max(64) }).parse(req.body);
+    const count = touchPresence(body.sessionId);
+    return reply.send({ activeUsers: count });
+  });
+
+  app.get("/v1/presence/active", async (_req, reply) => {
+    return reply.send({ activeUsers: getActiveCount() });
+  });
+
+  app.post("/v1/auth/otp/send", async (req, reply) => {
+    const body = z.object({ email: z.string().email() }).parse(req.body);
+    try {
+      const existingUser = await findUserByIdentity("email", body.email);
+      if (existingUser) {
+        await incrementUsage(existingUser.id, "otpRequestCount");
+      }
+      const { code } = await createOtp(body.email);
+      await sendOtpEmail(body.email, code);
+      const isDev = process.env.DEV_MODE === "true" && !process.env.EMAIL_PROVIDER_API_KEY;
+      return reply.send({ ok: true, expiresInSeconds: 300, devCode: isDev ? code : undefined });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "SEND_FAILED";
+      if (message.startsWith("RESEND_COOLDOWN:")) {
+        const seconds = message.split(":")[1];
+        return reply.code(429).send({
+          code: "RESEND_COOLDOWN",
+          message: `Please wait ${seconds} seconds before requesting a new code.`,
+        });
+      }
+      if (message === "EMAIL_PROVIDER_NOT_CONFIGURED") {
+        return reply.code(503).send({
+          code: "EMAIL_PROVIDER_NOT_CONFIGURED",
+          message: "Email delivery is not configured. Set EMAIL_PROVIDER_API_KEY and EMAIL_FROM_ADDRESS.",
+        });
+      }
+      return reply.code(502).send({ code: "EMAIL_DELIVERY_FAILED", message: "Could not send verification email." });
+    }
+  });
+
+  app.post("/v1/auth/otp/verify", async (req, reply) => {
+    const body = z
+      .object({
+        email: z.string().email(),
+        code: z.string().min(4).max(8),
+      })
+      .parse(req.body);
+
+    const existingUser = await findUserByIdentity("email", body.email);
+    const ok = await verifyOtp(body.email, body.code);
+    if (!ok) {
+      if (existingUser) {
+        await recordRiskEvent(existingUser.id, "otp_velocity");
+        await createAuditEvent({
+          actorId: existingUser.id,
+          action: "OTP_VERIFICATION_FAILED",
+          metadata: { email: body.email },
+        });
+      }
+      return reply.code(401).send({
+        code: "INVALID_OTP",
+        message: "Invalid or expired verification code.",
+      });
+    }
+
+    const { token, user, expiresAt } = await loginWithIdentity("email", body.email);
+    await createAuditEvent({
+      actorId: user.id,
+      action: "EMAIL_LOGIN_SUCCESS",
+      metadata: { email: body.email },
+    });
+    const wallet = user.wallets[0];
+    return reply.send({
+      token,
+      expiresAt: expiresAt.toISOString(),
+      user: {
+        id: user.id,
+        walletAddress: wallet?.scaAddress,
+        identities: user.identities.map((i) => ({
+          type: i.type,
+          value: i.normalizedValue,
+        })),
+      },
+    });
+  });
+
+  app.post("/v1/usage/track", async (req, reply) => {
+    const user = await resolveSession(req.headers.authorization);
+    if (!user) return reply.send({ ok: false, reason: "UNAUTHENTICATED" });
+
+    const body = z
+      .object({
+        action: z.enum([
+          "voice",
+          "swap",
+          "simulation",
+          "batch",
+          "connection_attempt",
+          "signature_request",
+        ]),
+        walletAddress: z
+          .string()
+          .regex(/^0x[a-fA-F0-9]{40}$/)
+          .optional(),
+      })
+      .parse(req.body);
+
+    const walletAddress =
+      body.walletAddress?.toLowerCase() ??
+      user.identities.find((i) => i.type === "wallet")?.normalizedValue ??
+      null;
+
+    const keyMap = {
+      voice: "voiceRequestCount",
+      swap: "swapRequestCount",
+      simulation: "txSimulationCount",
+      batch: "batchTxCount",
+      connection_attempt: "connectionCount",
+      signature_request: "signatureRequestCount",
+    } as const;
+
+    await trackUsageEvent({
+      walletAddress,
+      userId: user.id,
+      key: keyMap[body.action],
+    });
+
+    if (body.action === "connection_attempt" || body.action === "signature_request") {
+      await createAuditEvent({
+        actorId: user.id,
+        action:
+          body.action === "connection_attempt"
+            ? "WALLET_CONNECT_ATTEMPT"
+            : "OWNERSHIP_SIGNATURE_REQUEST",
+        metadata: walletAddress ? { walletAddress } : undefined,
+      });
+    }
+
+    const metrics = walletAddress
+      ? await getWalletUsageMetrics(walletAddress, user)
+      : await getUserUsageMetrics(user.id);
+
+    return reply.send({ ok: true, metrics });
+  });
+
+  app.post("/v1/auth/wallet", async (req, reply) => {
+    const body = z
+      .object({
+        address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+        message: z.string().min(32).max(2000),
+        signature: z.string().min(80).max(200),
+      })
+      .parse(req.body);
+
+    try {
+      const result = await authenticateWalletOwnership(body);
+      const metrics = await getWalletUsageMetrics(result.walletAddress, result.user);
+      const wallet = result.user.wallets[0];
+      return reply.send({
+        token: result.token,
+        expiresAt: result.expiresAt.toISOString(),
+        walletAddress: result.walletAddress,
+        smartWalletAddress: result.smartWalletAddress ?? wallet?.scaAddress ?? null,
+        smartWalletActivated: result.smartWalletActivated ?? true,
+        boundPrimaryWallet: result.boundPrimaryWallet ?? result.walletAddress,
+        metrics,
+        user: {
+          id: result.user.id,
+          walletAddress: wallet?.scaAddress,
+          identities: result.user.identities.map((i) => ({
+            type: i.type,
+            value: i.normalizedValue,
+          })),
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "WALLET_AUTH_FAILED";
+      const code =
+        message === "INVALID_SIGNATURE" ||
+        message === "INVALID_OWNERSHIP_MESSAGE" ||
+        message === "ADDRESS_MISMATCH" ||
+        message === "MESSAGE_EXPIRED"
+          ? 401
+          : 400;
+      return reply.code(code).send({ code: message, message });
+    }
+  });
 
   app.post("/v1/auth/login", async (req, reply) => {
     const body = z
@@ -57,6 +344,7 @@ export async function registerRoutes(app: FastifyInstance) {
     if (
       req.url === "/health" ||
       req.url.startsWith("/v1/auth/") ||
+      req.url.startsWith("/v1/presence/") ||
       req.method === "OPTIONS"
     ) {
       return;
@@ -77,6 +365,7 @@ export async function registerRoutes(app: FastifyInstance) {
         wallet.scaAddress as `0x${string}`,
       );
     }
+    const binding = await getWalletBindingStatus(user.id);
     return {
       id: user.id,
       walletAddress: wallet?.scaAddress,
@@ -86,13 +375,129 @@ export async function registerRoutes(app: FastifyInstance) {
         type: i.type,
         value: i.normalizedValue,
       })),
+      ...binding,
     };
+  });
+
+  app.get("/v1/wallet/status", async (req) => {
+    const user = req.user!;
+    return getWalletBindingStatus(user.id);
+  });
+
+  app.post("/v1/wallet/activate", async (req) => {
+    const user = req.user!;
+    const body = z
+      .object({ primaryWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/) })
+      .parse(req.body);
+    const res = await activateSmartWallet(user.id, body.primaryWalletAddress);
+    await trackUsageEvent({
+      walletAddress: body.primaryWalletAddress.toLowerCase(),
+      userId: user.id,
+      key: "walletCreationCount",
+    });
+    return res;
+  });
+
+  app.post("/v1/wallet/bind", async (req) => {
+    const user = req.user!;
+    const body = z
+      .object({ primaryWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/) })
+      .parse(req.body);
+    return bindPrimaryWallet(user.id, body.primaryWalletAddress);
+  });
+
+  app.post("/v1/wallet/rebind/send-otp", async (req, reply) => {
+    const user = req.user!;
+    const emailIdentity = user.identities.find((i) => i.type === "email");
+    if (!emailIdentity) {
+      return reply.code(400).send({
+        code: "EMAIL_NOT_LINKED",
+        message: "Link and verify an email before replacing your wallet.",
+      });
+    }
+    try {
+      const { code } = await createRebindOtp(emailIdentity.normalizedValue);
+      await sendOtpEmail(emailIdentity.normalizedValue, code);
+      await createAuditEvent({
+        actorId: user.id,
+        action: "RECOVERY_INITIATED",
+        metadata: { email: emailIdentity.normalizedValue },
+      });
+      return reply.send({ ok: true, email: emailIdentity.normalizedValue });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "SEND_FAILED";
+      if (message.startsWith("RESEND_COOLDOWN:")) {
+        const seconds = message.split(":")[1];
+        return reply.code(429).send({ code: "RESEND_COOLDOWN", message: `Wait ${seconds}s` });
+      }
+      return reply.code(502).send({ code: "EMAIL_DELIVERY_FAILED", message: "Could not send code." });
+    }
+  });
+
+  app.post("/v1/wallet/rebind/verify-otp", async (req, reply) => {
+    const user = req.user!;
+    const body = z.object({ code: z.string().min(4).max(8) }).parse(req.body);
+    const emailIdentity = user.identities.find((i) => i.type === "email");
+    if (!emailIdentity) {
+      return reply.code(400).send({ code: "EMAIL_NOT_LINKED", message: "No linked email." });
+    }
+    const ok = await verifyRebindOtp(emailIdentity.normalizedValue, body.code);
+    if (!ok) {
+      return reply.code(401).send({ code: "INVALID_OTP", message: "Invalid or expired code." });
+    }
+    const rebindToken = issueRebindToken(user.id, emailIdentity.normalizedValue);
+    return reply.send({ rebindToken, expiresInSeconds: 600 });
+  });
+
+  app.post("/v1/wallet/rebind/complete", async (req, reply) => {
+    const user = req.user!;
+    const body = z
+      .object({
+        rebindToken: z.string().min(16),
+        newWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+        previousWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
+      })
+      .parse(req.body);
+
+    if (!consumeRebindToken(body.rebindToken, user.id)) {
+      return reply.code(401).send({ code: "INVALID_REBIND_TOKEN", message: "Rebind session expired." });
+    }
+
+    const result = await replacePrimaryWallet(
+      user.id,
+      body.newWalletAddress,
+      body.previousWalletAddress,
+    );
+    await createAuditEvent({
+      actorId: user.id,
+      action: "RECOVERY_COMPLETED",
+      metadata: {
+        newWalletAddress: body.newWalletAddress.toLowerCase(),
+        previousWalletAddress: result.previousWalletAddress,
+      },
+    });
+    return reply.send(result);
+  });
+
+  app.get("/v1/audit", async (req) => {
+    const user = req.user!;
+    const logs = await prisma.auditLog.findMany({
+      where: { actorId: user.id },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+    return logs.map((l) => ({
+      id: l.id,
+      action: l.action,
+      metadata: l.metadata ? JSON.parse(l.metadata) : null,
+      createdAt: l.createdAt.toISOString(),
+    }));
   });
 
   app.get("/v1/recipients/lookup", async (req, reply) => {
     const q = z
       .object({
-        type: z.enum(["email", "phone"]),
+        type: z.enum(["email", "phone", "wallet"]),
         value: z.string(),
       })
       .parse(req.query);
@@ -111,8 +516,9 @@ export async function registerRoutes(app: FastifyInstance) {
     const body = z
       .object({
         recipient: z.object({
-          type: z.enum(["email", "phone"]),
-          value: z.string(),
+          // email optional — wallet-only remits allowed (EOA → smart wallet account)
+          type: z.enum(["email", "phone", "wallet"]),
+          value: z.string().min(3),
         }),
         amount: z.string(),
         idempotencyKey: z.string().uuid(),
@@ -121,6 +527,15 @@ export async function registerRoutes(app: FastifyInstance) {
       .parse(req.body);
 
     const user = req.user!;
+    await createAuditEvent({
+      actorId: user.id,
+      action: "TRANSACTION_PREPARED",
+      metadata: {
+        recipient: body.recipient,
+        amount: body.amount,
+      },
+    });
+
     const transfer = await createRemittance({
       senderUserId: user.id,
       recipientType: body.recipient.type,
@@ -147,6 +562,31 @@ export async function registerRoutes(app: FastifyInstance) {
 
     try {
       const settled = await executeRemittance(transfer.id);
+      const eoa =
+        user.identities.find((i) => i.type === "wallet")?.normalizedValue ??
+        user.wallets[0]?.ownerAddress ??
+        null;
+      await trackUsageEvent({
+        walletAddress: eoa,
+        userId: user.id,
+        key: "sponsoredTxCount",
+      });
+      await trackUsageEvent({
+        walletAddress: eoa,
+        userId: user.id,
+        key: "sponsoredUsdMicro",
+        amount: settled.amountMicro,
+      });
+      await createAuditEvent({
+        actorId: user.id,
+        action: "TRANSACTION_SUBMITTED",
+        metadata: {
+          transferId: settled.id,
+          txHash: settled.txHash,
+          state: settled.state,
+          walletAddress: eoa,
+        },
+      });
       return reply.send({
         transferId: settled.id,
         state: settled.state,
@@ -258,6 +698,17 @@ export async function registerRoutes(app: FastifyInstance) {
       .parse(req.body);
 
     const actor = await getOrCreateActorForUser(user.id);
+    if (body.role === "user") {
+      const eoa =
+        user.identities.find((i) => i.type === "wallet")?.normalizedValue ??
+        user.wallets[0]?.ownerAddress ??
+        null;
+      await trackUsageEvent({
+        walletAddress: eoa,
+        userId: user.id,
+        key: "aiRequestCount",
+      });
+    }
     const message = await createMessage({
       actorId: actor.id,
       conversationId: body.conversationId ?? null,

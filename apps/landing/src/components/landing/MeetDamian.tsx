@@ -1,7 +1,6 @@
 "use client";
 
 
-
 import { motion, useInView } from "framer-motion";
 
 import { useRef } from "react";
@@ -167,15 +166,10 @@ export default function MeetDamian() {
         </p>
 
         <p className="mt-4 text-base leading-relaxed text-[var(--ar-fg-muted)] md:text-lg">
-
           Every transaction is presented for review and requires explicit user approval,
-
           keeping users in complete control while reducing the complexity of interacting with
-
           modern blockchain infrastructure.
-
         </p>
-
       </div>
 
 

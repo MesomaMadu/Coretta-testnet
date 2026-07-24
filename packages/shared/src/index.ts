@@ -37,7 +37,7 @@ export type TransferState =
   | "SETTLED"
   | "FAILED";
 
-export type IdentityType = "email" | "phone";
+export type IdentityType = "email" | "phone" | "wallet";
 
 export interface RemitRequest {
   recipient: { type: IdentityType; value: string };
@@ -76,3 +76,96 @@ export function normalizePhone(phone: string): string {
   if (digits.length < 10) throw new Error("INVALID_PHONE");
   return `+${digits}`;
 }
+
+export function normalizeWalletAddress(address: string): string {
+  const trimmed = address.trim().toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(trimmed)) {
+    throw new Error("INVALID_WALLET_ADDRESS");
+  }
+  return trimmed;
+}
+
+export type UserTier = "anonymous" | "email_verified" | "wallet_verified" | "trusted";
+
+export interface TierLimits {
+  sponsoredTxDaily: number;
+  sponsoredUsdDaily: number;
+  aiRequestsDaily: number;
+  otpRequestsHourly: number;
+  maxConcurrentTransfers: number;
+}
+
+export interface UserUsageMetrics {
+  userTier: UserTier;
+  /** Lowercase EOA when metrics are wallet-scoped; null for account-only. */
+  walletAddress: string | null;
+  live: boolean;
+  sponsoredTxCount: number;
+  sponsoredTxLimit: number;
+  sponsoredUsdSpent: number;
+  sponsoredUsdLimit: number;
+  aiRequestCount: number;
+  aiRequestLimit: number;
+  otpRequestCount: number;
+  otpRequestLimit: number;
+  swapRequestCount: number;
+  swapRequestLimit: number;
+  voiceRequestCount: number;
+  voiceRequestLimit: number;
+  txSimulationCount: number;
+  batchTxCount: number;
+  walletCreationCount: number;
+  signatureRequestCount: number;
+  connectionCount: number;
+  resetInSeconds: number;
+  lastResetAt: string;
+  updatedAt: string;
+}
+
+export type SettlementPreference =
+  | "arc"
+  | "auto"
+  | "ethereum"
+  | "base"
+  | "arbitrum"
+  | "optimism"
+  | "polygon"
+  | "avalanche";
+
+export type FeeAssetPreference = "sponsored" | "usdc" | "eurc" | "auto";
+
+export interface UserNetworkPreferences {
+  settlementPreference: SettlementPreference;
+  feeAssetPreference: FeeAssetPreference;
+  showTransactionRoutes: boolean;
+  showBundlerDetails: boolean;
+  showSponsorshipUsage: boolean;
+  showSmartWalletAddress: boolean;
+  developerDiagnostics: boolean;
+}
+
+export interface NetworkMetadata {
+  id: string;
+  name: string;
+  chainId: number;
+  isArc: boolean;
+  supported: boolean;
+  rpcUrl: string;
+  explorerUrl: string;
+  hasDeterministicFinality: boolean;
+  hasSponsorship: boolean;
+}
+
+export interface RouteEstimate {
+  routeId: string;
+  sourceChain: string;
+  destinationChain: string;
+  asset: string;
+  amount: string;
+  estimatedFeeUsd: string;
+  estimatedLatencyMs: number;
+  isSponsored: boolean;
+  deterministic: boolean;
+  priorityScore: number;
+}
+

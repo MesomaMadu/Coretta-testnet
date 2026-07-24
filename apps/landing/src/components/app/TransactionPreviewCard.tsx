@@ -11,6 +11,8 @@ interface Props {
   onConfirm: () => void;
   onCancel: () => void;
   connected: boolean;
+  ownershipVerified?: boolean;
+  smartWalletActive?: boolean;
 }
 
 export default function TransactionPreviewCard({
@@ -19,6 +21,8 @@ export default function TransactionPreviewCard({
   onConfirm,
   onCancel,
   connected,
+  ownershipVerified = false,
+  smartWalletActive = false,
 }: Props) {
   const locked = phase === "preview" || phase === "awaiting_signature";
 
@@ -109,7 +113,13 @@ export default function TransactionPreviewCard({
             onClick={onConfirm}
             disabled={!connected}
           >
-            {connected ? "Confirm & Sign" : "Connect wallet first"}
+            {!connected
+              ? "Connect wallet first"
+              : !ownershipVerified
+                ? "Verify ownership first"
+                : !smartWalletActive
+                  ? "Activate smart wallet"
+                  : "Confirm & Sign"}
           </Button>
           <Button variant="glass" onClick={onCancel}>
             Cancel

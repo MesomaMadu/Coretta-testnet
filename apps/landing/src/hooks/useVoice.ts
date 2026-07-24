@@ -47,6 +47,30 @@ export function useVoice({ onTranscript }: UseVoiceOptions) {
     try {
       rec.start();
       setListening(true);
+      void import("@/lib/api").then(({ apiFetch }) => {
+        const addr =
+          typeof window !== "undefined"
+            ? sessionStorage.getItem("coretta_wallet_verified_address")
+            : null;
+        void apiFetch<{ ok: boolean; metrics?: import("@arcremit/shared").UserUsageMetrics }>(
+          "/v1/usage/track",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              action: "voice",
+              ...(addr ? { walletAddress: addr } : {}),
+            }),
+          },
+        )
+          .then((res) => {
+            if (res.metrics) {
+              window.dispatchEvent(
+                new CustomEvent("coretta-usage-updated", { detail: res.metrics }),
+              );
+            }
+          })
+          .catch(() => {});
+      });
     } catch {
       setListening(false);
     }

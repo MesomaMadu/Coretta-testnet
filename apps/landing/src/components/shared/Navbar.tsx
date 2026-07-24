@@ -4,6 +4,7 @@ import Link from "next/link";
 import { motion, useScroll, useTransform } from "framer-motion";
 import { useState } from "react";
 import Logo from "./Logo";
+import ActiveUsersBadge from "./ActiveUsersBadge";
 import { Button } from "@/components/ui/button";
 
 const NAV = [
@@ -40,8 +41,9 @@ export default function Navbar() {
         </ul>
 
         <div className="ml-auto flex items-center gap-2">
+          <ActiveUsersBadge />
           <Button variant="primary" size="sm" className="hidden sm:inline-flex" asChild>
-            <Link href="/app">Go To App</Link>
+            <Link href="/app">Launch App</Link>
           </Button>
           <button
             type="button"
@@ -67,7 +69,7 @@ export default function Navbar() {
               ))}
               <li>
                 <Button variant="primary" className="w-full" asChild>
-                  <Link href="/app">Go To App</Link>
+                  <Link href="/app">Launch App</Link>
                 </Button>
               </li>
             </ul>

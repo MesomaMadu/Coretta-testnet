@@ -49,30 +49,30 @@ function TrustCard({
       initial={{ opacity: 0, y: 24 }}
       animate={inView ? { opacity: 1, y: 0 } : { opacity: 0, y: 24 }}
       transition={{ ...springSmooth, delay: index * 0.07 }}
-      whileHover={{ y: -4, borderColor: "rgba(52,211,153,0.35)" }}
+      whileHover={{ y: -4, borderColor: "rgba(124,77,255,0.35)" }}
       className="relative flex gap-4 overflow-hidden rounded-2xl border border-[var(--ar-border)] bg-[var(--ar-surface)] p-6 backdrop-blur-sm"
     >
       <motion.div
-        className="pointer-events-none absolute -left-4 top-1/2 h-20 w-20 -translate-y-1/2 rounded-full bg-emerald-400/10 blur-xl"
+        className="pointer-events-none absolute -left-4 top-1/2 h-20 w-20 -translate-y-1/2 rounded-full bg-[#8F5CFF]/10 blur-xl"
         animate={{ opacity: [0.2, 0.5, 0.2], scale: [1, 1.2, 1] }}
         transition={{ ...loopSlow, delay: index * 0.35 }}
         aria-hidden
       />
 
       <motion.div
-        className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-emerald-400/20 bg-emerald-500/10"
+        className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-[#8F5CFF]/20 bg-[#8F5CFF]/10"
         animate={{
           boxShadow: [
-            "0 0 0 rgba(52,211,153,0)",
-            "0 0 24px rgba(52,211,153,0.25)",
-            "0 0 0 rgba(52,211,153,0)",
+            "0 0 0 rgba(124,77,255,0)",
+            "0 0 24px rgba(124,77,255,0.25)",
+            "0 0 0 rgba(124,77,255,0)",
           ],
         }}
         transition={{ duration: 4, repeat: Infinity, ease: "easeInOut", delay: index * 0.5 }}
       >
-        <Icon className="h-7 w-7 text-emerald-400" aria-hidden />
+        <Icon className="h-7 w-7 text-[#8F5CFF]" aria-hidden />
         <motion.span
-          className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-400 text-[8px] font-bold text-slate-900"
+          className="absolute -right-0.5 -top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-[#8F5CFF] text-[8px] font-bold text-white"
           animate={{ scale: [1, 1.15, 1] }}
           transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
           aria-hidden
@@ -128,7 +128,7 @@ export default function TrustSecurity() {
             animate={inView ? { opacity: [0.5, 1, 0.5] } : {}}
             transition={{ duration: 3, repeat: Infinity, delay: i * 0.5, ease: "easeInOut" }}
           >
-            <span className="h-px w-6 bg-gradient-to-r from-transparent via-emerald-400/60 to-transparent" />
+            <span className="h-px w-6 bg-gradient-to-r from-transparent via-[#8F5CFF]/60 to-transparent" />
             {step}
           </motion.div>
         ))}

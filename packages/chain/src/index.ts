@@ -3,3 +3,5 @@ export * from "./permit.js";
 export * from "./paymaster.js";
 export * from "./bundler.js";
 export * from "./wallet.js";
+export * from "./registry.js";
+

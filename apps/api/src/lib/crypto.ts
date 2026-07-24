@@ -33,10 +33,6 @@ export function hashSessionToken(token: string): string {
   return scryptSync(token, "session", 32).toString("hex");
 }
 
-function keyFromSecretWithSalt(secret: string, salt: string): Buffer {
-  return scryptSync(secret, salt, 32);
-}
-
 export function encryptText(plainText: string, secret: string): string {
   const key = keyFromSecret(secret);
   const iv = randomBytes(12);

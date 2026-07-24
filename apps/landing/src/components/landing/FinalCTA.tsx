@@ -42,7 +42,7 @@ export default function FinalCTA() {
         </p>
         <div className="relative mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
           <Button variant="glow" size="lg" asChild>
-            <Link href="/app">Go To App</Link>
+            <Link href="/app">Launch App</Link>
           </Button>
           <Button variant="glass" size="lg" asChild>
             <Link href="/#demo">Watch demo</Link>

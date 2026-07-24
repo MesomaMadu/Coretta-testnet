@@ -30,7 +30,7 @@ const openSans = Open_Sans({
 const cabin = Cabin({
   subsets: ["latin"],
   weight: ["500"],
-  style: ["normal", "italic"],
+  style: ["normal"],
   variable: "--font-cabin",
   display: "swap",
 });

@@ -7,6 +7,7 @@ export interface UserProfile {
   onboardingComplete: boolean;
   linkedEmail: string | null;
   emailVerifiedAt: number | null;
+  walletTutorialComplete: boolean;
 }
 
 const STORAGE_KEY = "coretta_profile";
@@ -17,6 +18,7 @@ const DEFAULT: UserProfile = {
   onboardingComplete: false,
   linkedEmail: null,
   emailVerifiedAt: null,
+  walletTutorialComplete: false,
 };
 
 function load(): UserProfile {
@@ -80,6 +82,10 @@ export function useProfile() {
     update({ linkedEmail: null, emailVerifiedAt: null });
   }, [update]);
 
+  const skipWalletTutorial = useCallback(() => {
+    update({ walletTutorialComplete: true });
+  }, [update]);
+
   return {
     profile,
     hydrated,
@@ -87,5 +93,6 @@ export function useProfile() {
     linkEmail,
     unlinkEmail,
     update,
+    skipWalletTutorial,
   };
 }

@@ -22,7 +22,7 @@ export async function createRemittance({
   idempotencyKey,
 }: {
   senderUserId: string;
-  recipientType: "email" | "phone";
+  recipientType: "email" | "phone" | "wallet";
   recipientValue: string;
   amount: string;
   idempotencyKey: string;

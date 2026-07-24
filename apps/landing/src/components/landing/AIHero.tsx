@@ -72,7 +72,7 @@ export default function AIHero() {
             className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row"
           >
             <Button variant="primary" size="lg" asChild>
-              <Link href="/app">Go To App</Link>
+              <Link href="/app">Launch App</Link>
             </Button>
             <Button variant="glass" size="lg" asChild>
               <Link href="/#demo">See it work</Link>

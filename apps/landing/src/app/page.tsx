@@ -1,6 +1,7 @@
 import Background from "@/components/landing/Background";
 import Navbar from "@/components/landing/Navbar";
 import Hero from "@/components/landing/Hero";
+import LandingHoverDemo from "@/components/landing/LandingHoverDemo";
 import Features from "@/components/landing/Features";
 import HowItWorks from "@/components/landing/HowItWorks";
 import WhyCoretta from "@/components/landing/WhyCoretta";
@@ -16,6 +17,7 @@ export default function HomePage() {
       <Background />
       <Navbar />
       <Hero />
+      <LandingHoverDemo />
       <Features />
       <HowItWorks />
       <WhyCoretta />

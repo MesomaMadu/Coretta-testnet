@@ -12,4 +12,9 @@ export const config = {
   /** Encrypt AI conversations & memory summaries at rest */
   aiMemoryKey: process.env.AI_MEMORY_KEY ?? process.env.SESSION_SECRET ?? "dev-ai-memory-key-change-me",
   devMode: process.env.DEV_MODE !== "false",
+  arcRpcUrl: process.env.ARC_TESTNET_RPC_URL ?? "https://rpc.testnet.arc.network",
+  bundlerRpcUrl: process.env.BUNDLER_RPC_URL,
+  circleApiKey: process.env.CIRCLE_API_KEY,
+  circleEntitySecret: process.env.CIRCLE_ENTITY_SECRET,
+  circleWalletSetId: process.env.CIRCLE_WALLET_SET_ID,
 };

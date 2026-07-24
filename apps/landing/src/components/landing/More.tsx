@@ -6,7 +6,7 @@ import { ArrowUpRight } from "lucide-react";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
 
 const LINKS = [
-  { label: "Open App", href: "/app", external: false },
+  { label: "Launch App", href: "/app", external: false },
   { label: "Arc Testnet Explorer", href: "https://testnet.arcscan.app", external: true },
 ] as const;
 

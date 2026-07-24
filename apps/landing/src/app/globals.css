@@ -66,7 +66,7 @@ section header h2 + p,
 .subheading-text {
   font-family: var(--font-cabin), ui-sans-serif, system-ui, sans-serif;
   font-weight: 500;
-  font-style: italic;
+  font-style: normal;
 }
 
 /* Hero headline */

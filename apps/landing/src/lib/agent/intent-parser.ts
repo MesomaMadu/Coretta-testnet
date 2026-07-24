@@ -10,6 +10,19 @@ function parseAmount(raw: string): string | null {
 }
 
 function parseRecipient(text: string): string | null {
+  if (/\bsmart\s+wallet\b/i.test(text)) {
+    return "__BOUND_SMART_WALLET__";
+  }
+  if (
+    /\b(my|main|connected)\s+wallet\b/i.test(text) ||
+    /\bto myself\b/i.test(text) ||
+    /\bmy balance to\b/i.test(text)
+  ) {
+    return "__BOUND_MAIN_WALLET__";
+  }
+  // Prefer full EVM addresses over names/emails
+  const evm = text.match(/0x[a-fA-F0-9]{40}/);
+  if (evm) return evm[0];
   const email = text.match(/[\w.+-]+@[\w.-]+\.\w+/);
   if (email) return email[0];
   const toMatch = text.match(
@@ -68,10 +81,12 @@ export function parseUserIntent(input: string): ParseResult {
         asset: from,
         receiveAsset: to,
         receiveAmount: amount,
-        swapRoute: `${from} → ${to} (verified route)`,
+        swapRoute: `${from} → ${to} (preview only)`,
         sponsorship: "Circle Paymaster — gas sponsored in USDC",
         network: "Arc Testnet",
         executionPath: "Swap → Smart wallet → Bundler → Arc settlement",
+        riskWarning:
+          "On-chain swap is not wired yet (no DEX router / /v1/swap). Confirm will explain what is missing. Use Send USDC to 0x… for live transfers.",
       },
     };
   }
@@ -84,6 +99,13 @@ export function parseUserIntent(input: string): ParseResult {
     if (!amount) {
       return { ok: false, reason: "ambiguous", message: "How much would you like to swap?" };
     }
+    if (from === to) {
+      return {
+        ok: false,
+        reason: "ambiguous",
+        message: "Source and destination assets are the same. Pick different assets to swap.",
+      };
+    }
     const action: AllowedAction =
       from === "USDC" ? "swapUSDCtoEURC" : "swapEURCtoUSDC";
     return {
@@ -95,10 +117,12 @@ export function parseUserIntent(input: string): ParseResult {
         asset: from,
         receiveAsset: to,
         receiveAmount: amount,
-        swapRoute: `${from} → ${to}`,
+        swapRoute: `${from} → ${to} (preview only)`,
         sponsorship: "Circle Paymaster — gas sponsored in USDC",
         network: "Arc Testnet",
         executionPath: "Swap only — no outbound transfer",
+        riskWarning:
+          "On-chain swap is not wired yet (no DEX router / /v1/swap). Confirm will not settle. Use Send USDC to a full 0x address for live transfers.",
       },
     };
   }
