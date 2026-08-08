@@ -135,29 +135,29 @@ export default function WalletReplaceModal({
   };
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0f172a]/95 p-6">
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border border-black/10 bg-white p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Replace wallet</h2>
-          <button type="button" onClick={onClose} className="text-white/50 hover:text-white">
+          <h2 className="text-lg font-semibold text-black">Replace wallet</h2>
+          <button type="button" onClick={onClose} className="text-black/40 hover:text-black">
             <X className="h-5 w-5" />
           </button>
         </div>
 
         {error && (
-          <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+          <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-50 px-3 py-2 text-xs text-rose-700">
             {error}
           </p>
         )}
 
         {step === "intro" && (
           <div className="space-y-4">
-            <p className="text-sm text-white/60">
+            <p className="text-sm text-black/60">
               Verify your email, connect a new wallet, and sign to bind it. Your previous wallet
               will immediately lose privileged access.
             </p>
             {!profile.linkedEmail ? (
-              <p className="text-xs text-amber-200">Link and verify an email in Settings first.</p>
+              <p className="text-xs text-amber-800">Link and verify an email in Settings first.</p>
             ) : (
               <Button variant="primary" className="w-full" onClick={() => void sendOtp()} disabled={loading}>
                 <Mail className="mr-2 h-4 w-4" />
@@ -169,13 +169,13 @@ export default function WalletReplaceModal({
 
         {step === "otp" && (
           <div className="space-y-4">
-            <p className="text-sm text-white/60">
-              Enter the code sent to <span className="text-white">{profile.linkedEmail}</span>
+            <p className="text-sm text-black/60">
+              Enter the code sent to <span className="text-black">{profile.linkedEmail}</span>
             </p>
             <input
               value={otp}
               onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-center font-mono text-lg tracking-[0.4em] text-white"
+              className="w-full rounded-xl border border-black/10 bg-[#F5F5F5] px-4 py-2.5 text-center font-mono text-lg tracking-[0.4em] text-black"
               placeholder="••••••"
               maxLength={6}
             />
@@ -186,7 +186,7 @@ export default function WalletReplaceModal({
               type="button"
               disabled={resendIn > 0 || loading}
               onClick={() => void sendOtp()}
-              className="w-full text-xs text-white/45 hover:text-white disabled:opacity-40"
+              className="w-full text-xs text-black/45 hover:text-black disabled:opacity-40"
             >
               {resendIn > 0 ? `Resend in ${resendIn}s` : "Resend code"}
             </button>
@@ -195,7 +195,7 @@ export default function WalletReplaceModal({
 
         {step === "connect" && (
           <div className="space-y-4">
-            <p className="text-sm text-white/60">Connect your new wallet, then continue.</p>
+            <p className="text-sm text-black/60">Connect your new wallet, then continue.</p>
             {!isConnected ? (
               <Button variant="primary" className="w-full" onClick={onConnectWallet}>
                 <Wallet className="mr-2 h-4 w-4" />
@@ -203,7 +203,7 @@ export default function WalletReplaceModal({
               </Button>
             ) : (
               <>
-                <p className="font-mono text-xs text-[#8F5CFF]">
+                <p className="font-mono text-xs text-[#0A0A0A]">
                   {address?.slice(0, 8)}…{address?.slice(-6)}
                 </p>
                 <Button variant="primary" className="w-full" onClick={() => setStep("sign")}>
@@ -216,7 +216,7 @@ export default function WalletReplaceModal({
 
         {step === "sign" && (
           <div className="space-y-4">
-            <p className="text-sm text-white/60">
+            <p className="text-sm text-black/60">
               Approve two signature requests in your wallet to complete rebinding.
             </p>
             <Button variant="primary" className="w-full" onClick={() => void completeRebind()} disabled={loading}>
@@ -228,7 +228,7 @@ export default function WalletReplaceModal({
 
         {step === "done" && (
           <div className="space-y-4 text-center">
-            <p className="text-sm text-[#8F5CFF]">Wallet replaced successfully.</p>
+            <p className="text-sm text-[#0A0A0A]">Wallet replaced successfully.</p>
             <Button variant="glass" className="w-full" onClick={onClose}>
               Done
             </Button>

@@ -6,7 +6,7 @@ import { ArrowLeft } from "lucide-react";
 
 export default function ExperienceEntry() {
   return (
-    <section className="relative z-10 min-h-[70vh] flex flex-col items-center justify-center px-4 pt-28 pb-16 text-center md:pt-36">
+    <section className="hero-section relative z-10 min-h-[70vh] flex flex-col items-center justify-center px-4 pt-28 pb-16 text-center md:pt-36">
       <Link
         href="/"
         className="absolute left-4 top-24 flex items-center gap-2 text-sm text-white/50 hover:text-white md:left-8"

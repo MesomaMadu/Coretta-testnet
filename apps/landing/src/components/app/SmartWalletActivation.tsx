@@ -9,9 +9,9 @@ interface Props {
 
 export default function SmartWalletActivation({ onActivate, activating }: Props) {
   return (
-    <div className="mx-4 mb-4 rounded-2xl border border-[#8F5CFF]/30 bg-[#8F5CFF]/10 p-4">
-      <h3 className="text-sm font-semibold text-white">Smart Wallet Required</h3>
-      <p className="mt-2 text-xs leading-relaxed text-white/60">
+    <div className="mx-4 mb-4 rounded-2xl border border-black/10 bg-white p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-black">Smart Wallet Required</h3>
+      <p className="mt-2 text-xs leading-relaxed text-black/60">
         Coretta uses a Smart Wallet to simplify transactions, sponsorship, account recovery, and
         AI-assisted transfers. Activate your Smart Wallet to continue.
       </p>

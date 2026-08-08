@@ -51,7 +51,7 @@ export function parseUserIntent(input: string): ParseResult {
     return {
       ok: false,
       reason: "ambiguous",
-      message: "Tell me who to pay and how much — for example: “Send 50 USDC to Sarah.”",
+      message: "Tell me who to pay and how much, for example: “Send 50 USDC to Sarah.”",
     };
   }
 
@@ -82,12 +82,21 @@ export function parseUserIntent(input: string): ParseResult {
         receiveAsset: to,
         receiveAmount: amount,
         swapRoute: `${from} → ${to} (preview only)`,
-        sponsorship: "Circle Paymaster — gas sponsored in USDC",
+        sponsorship: "Circle Paymaster, gas sponsored in USDC",
         network: "Arc Testnet",
         executionPath: "Swap → Smart wallet → Bundler → Arc settlement",
         riskWarning:
-          "On-chain swap is not wired yet (no DEX router / /v1/swap). Confirm will explain what is missing. Use Send USDC to 0x… for live transfers.",
+          "Swap settles via Circle App Kit on Arc Testnet. Wallet must be eligible (Circle developer-controlled wallet / funded SCA). USDC is the native gas token on Arc.",
       },
+    };
+  }
+
+  // Arc: USDC is gas — reject USDC↔native phrasing early
+  if (/\b(swap|convert)\b/i.test(text) && /\bnative\b/i.test(text) && /\bUSDC\b/i.test(text)) {
+    return {
+      ok: false,
+      reason: "blocked",
+      message: "Already using network gas token.",
     };
   }
 
@@ -117,12 +126,12 @@ export function parseUserIntent(input: string): ParseResult {
         asset: from,
         receiveAsset: to,
         receiveAmount: amount,
-        swapRoute: `${from} → ${to} (preview only)`,
-        sponsorship: "Circle Paymaster — gas sponsored in USDC",
+        swapRoute: `${from} → ${to}`,
+        sponsorship: "Circle Paymaster, gas sponsored in USDC",
         network: "Arc Testnet",
-        executionPath: "Swap only — no outbound transfer",
+        executionPath: "App Kit swap on Arc_Testnet",
         riskWarning:
-          "On-chain swap is not wired yet (no DEX router / /v1/swap). Confirm will not settle. Use Send USDC to a full 0x address for live transfers.",
+          "Requires KIT_KEY + Circle wallet credentials on the server, and a funded wallet holding the source token.",
       },
     };
   }
@@ -144,7 +153,7 @@ export function parseUserIntent(input: string): ParseResult {
         totalAmount: multi.total,
         recipientCount: multi.recipients.length,
         riskWarning,
-        sponsorship: "Circle Paymaster — gas sponsored in USDC",
+        sponsorship: "Circle Paymaster, gas sponsored in USDC",
         network: "Arc Testnet",
         executionPath: `Batch UserOp → ${multi.recipients.length} transfers (single signature) · ${summary}`,
       },
@@ -165,7 +174,7 @@ export function parseUserIntent(input: string): ParseResult {
       return {
         ok: false,
         reason: "ambiguous",
-        message: "Which asset should I send — USDC or EURC?",
+        message: "Which asset should I send, USDC or EURC?",
       };
     }
     if (!recipient) {
@@ -179,7 +188,7 @@ export function parseUserIntent(input: string): ParseResult {
         recipient,
         amount,
         asset,
-        sponsorship: "Circle Paymaster — gas sponsored in USDC",
+        sponsorship: "Circle Paymaster, gas sponsored in USDC",
         network: "Arc Testnet",
         executionPath: "Smart wallet → Paymaster → Bundler → Arc",
       },
@@ -200,7 +209,7 @@ export function parseUserIntent(input: string): ParseResult {
         recipient,
         amount,
         asset: "EURC",
-        sponsorship: "Circle Paymaster — gas sponsored in USDC",
+        sponsorship: "Circle Paymaster, gas sponsored in USDC",
         network: "Arc Testnet",
         executionPath: "Smart wallet → Paymaster → Bundler → Arc",
       },

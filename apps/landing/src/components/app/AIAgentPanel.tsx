@@ -44,7 +44,6 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
     activateSmartWallet,
     canTransact,
     isBoundMismatch,
-    emailOnlyMode,
   } = useWalletSession();
 
   const greeting =
@@ -212,44 +211,79 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
     markExecuting();
     setPhase("executing");
 
-    // Swaps are preview-only today — no DEX/router/API path exists on Arc Testnet yet.
-    if (preview.action === "swapUSDCtoEURC" || preview.action === "swapEURCtoUSDC") {
-      failExecution(
-        txId,
-        [
-          "Swap cannot execute on-chain yet.",
-          "",
-          "What works today: USDC send/remit to a full 0x address (or email) via /v1/remit.",
-          "What is missing for swaps:",
-          "• No DEX / liquidity router integrated for USDC↔EURC on Arc Testnet",
-          "• No POST /v1/swap API or swap UserOp builder",
-          "• EURC pool/router contract addresses not configured",
-          "",
-          "Manual inputs needed before swaps can settle:",
-          "1. Arc Testnet swap router (or Circle Swap Kit) address + ABI path",
-          "2. EURC contract (if different from app default) + pool/route config",
-          "3. Funded smart wallet with the source token (USDC or EURC)",
-          "4. Reliable RPC (public Arc RPC is rate-limiting) and BUNDLER_RPC_URL",
-          "",
-          'Until then use: "Send 5 USDC to 0x…" (full address).',
-        ].join("\n"),
-      );
-      emitActivity(`Swap blocked — not implemented on-chain`, "failed", {
-        asset: preview.asset,
-        amount: preview.amount,
-        recipient: preview.recipient,
-        failureReason: "SWAP_NOT_IMPLEMENTED",
-      });
-      return;
-    }
-
     const token = getApiToken();
     if (!token) {
       failExecution(
         txId,
-        "Wallet session missing. Reconnect your wallet and approve the ownership signature (email is not required).",
+        "Wallet session missing. Reconnect your wallet and approve the ownership signature.",
       );
       return;
+    }
+
+    // Circle App Kit swap path (server-side /v1/swap)
+    if (preview.action === "swapUSDCtoEURC" || preview.action === "swapEURCtoUSDC") {
+      const tokenIn = preview.action === "swapUSDCtoEURC" ? "USDC" : "EURC";
+      const tokenOut = preview.action === "swapUSDCtoEURC" ? "EURC" : "USDC";
+      try {
+        const res = await apiFetch<{
+          ok: boolean;
+          code?: string;
+          message?: string;
+          txHash?: string;
+          explorerUrl?: string;
+          amountOut?: string;
+        }>("/v1/swap", {
+          method: "POST",
+          body: JSON.stringify({
+            tokenIn,
+            tokenOut,
+            amountIn: preview.amount,
+          }),
+        });
+
+        if (!res.ok) {
+          failExecution(txId, res.message ?? res.code ?? "Swap failed");
+          emitActivity(`Swap failed`, "failed", {
+            asset: preview.asset,
+            amount: preview.amount,
+            recipient: preview.recipient,
+            failureReason: res.message ?? res.code,
+          });
+          return;
+        }
+
+        const settled = {
+          ...pendingRecord,
+          status: "settled" as const,
+          txHash: res.txHash,
+          explorerUrl: res.explorerUrl,
+        };
+        updateTxCard(settled);
+        upsertTransaction(settled);
+        completeExecution(res.txHash, txId);
+        emitActivity(`Swap completed`, "complete", {
+          asset: preview.asset,
+          amount: preview.amount,
+          recipient: preview.recipient,
+          txHash: res.txHash,
+        });
+        speak(
+          res.amountOut
+            ? `Swap settled. Received approximately ${res.amountOut} ${tokenOut}.`
+            : "Swap settled successfully.",
+        );
+        return;
+      } catch (err) {
+        const reason = humanizeTxFailure(err);
+        failExecution(txId, reason);
+        emitActivity(`Swap failed`, "failed", {
+          asset: preview.asset,
+          amount: preview.amount,
+          recipient: preview.recipient,
+          failureReason: reason,
+        });
+        return;
+      }
     }
 
     // Swap-only previews use "Your wallet" — map to the connected EOA for sends if needed.
@@ -334,24 +368,24 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
   const activeOrb = listening || phase === "thinking" || phase === "executing";
 
   return (
-    <div className="damian-chat-bg flex h-full min-h-0 flex-1 flex-col">
-      <div className="flex flex-col items-center border-b border-[var(--ar-border)] bg-[var(--damian-surface)] py-6">
+    <div className="flex h-full min-h-0 flex-1 flex-col bg-[#F5F5F5] text-black">
+      <div className="flex flex-col items-center border-b border-black/10 bg-white py-6">
         <AIOrb active={activeOrb} size="lg" />
-        <p className="mt-3 text-xs font-medium uppercase tracking-widest text-[#8F5CFF]">
+        <p className="mt-3 text-xs font-medium uppercase tracking-widest text-black">
           {AGENT_NAME}
         </p>
-        <p className="subheading-text mt-1 text-center text-xs text-white/45">{AGENT_TAGLINE}</p>
+        <p className="subheading-text mt-1 text-center text-xs text-black/50">{AGENT_TAGLINE}</p>
       </div>
 
       {isConnected && !verified && (
-        <div className="mx-4 mb-2 rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+        <div className="mx-4 mb-2 rounded-2xl border border-black/10 bg-white px-3 py-2 text-xs text-black/80 shadow-sm">
           {verifying
-            ? "Confirm ownership in your wallet — one free signature, no gas."
+            ? "Confirm ownership in your wallet: one free signature, no gas."
             : "Wallet connected. Approve the ownership signature to continue."}
           {!verifying && (
             <button
               type="button"
-              className="ml-2 font-semibold text-cyan-200 underline underline-offset-2 hover:text-white"
+              className="ml-2 font-semibold text-black underline underline-offset-2 hover:text-black/70"
               onClick={() => void verifyOwnership()}
             >
               Sign now
@@ -368,26 +402,19 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
       )}
 
       {isBoundMismatch && (
-        <div className="mx-4 mb-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+        <div className="mx-4 mb-2 rounded-2xl border border-amber-500/30 bg-amber-50 px-3 py-2 text-xs text-amber-900">
           Connected wallet does not match your bound wallet. Replace your wallet in Settings to
           continue.
         </div>
       )}
 
       {isConnected && verified && smartWalletActive && !isBoundMismatch && (
-        <div className="mx-4 mb-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100/90">
-          Smart wallet bound to your connected address. Email is optional — you can send now.
+        <div className="mx-4 mb-2 rounded-2xl border border-black/10 bg-white px-3 py-2 text-xs text-black/80 shadow-sm">
+          Smart wallet bound. You can send now.
         </div>
       )}
 
-      {emailOnlyMode && (
-        <div className="mx-4 mb-2 rounded-xl border border-[#8F5CFF]/20 bg-[#8F5CFF]/5 px-3 py-2 text-xs text-white/55">
-          Email session active — connect a wallet to send transactions. Email linking is not
-          required for wallet sends.
-        </div>
-      )}
-
-      {smartWalletActive && <SmartWalletBalanceBubble />}
+      {isConnected && verified && smartWalletActive && <SmartWalletBalanceBubble />}
 
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4">
         {messages.map((m) => (
@@ -417,13 +444,13 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
       </div>
 
       {voiceDraft && (
-        <div className="mx-4 mb-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-          Voice captured — review and press Send to continue. Voice never auto-sends.
+        <div className="mx-4 mb-2 rounded-2xl border border-amber-500/30 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          Voice captured. Review and press Send to continue. Voice never auto-sends.
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="border-t border-white/8 p-4">
-        <div className="damian-input-surface flex gap-2 rounded-2xl border p-1.5 transition">
+      <form onSubmit={handleSubmit} className="border-t border-black/10 bg-white p-4">
+        <div className="flex gap-2 rounded-full border border-black/10 bg-[#F5F5F5] p-1.5 transition focus-within:border-black/30">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -433,14 +460,14 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
               phase === "executing" ||
               (isConnected && !canTransact)
             }
-            className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-white placeholder:text-white/35 outline-none"
+            className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-black placeholder:text-black/35 outline-none"
           />
           {supported && (
             <Button
               type="button"
-              variant="glass"
+              variant="ghost"
               size="sm"
-              className="h-10 w-10 shrink-0 rounded-xl p-0"
+              className="h-10 w-10 shrink-0 rounded-full p-0 text-black/60 hover:text-black"
               onClick={() => (listening ? stopListening() : startListening())}
               aria-label={listening ? "Stop listening" : "Voice input"}
             >
@@ -451,7 +478,7 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
             type="button"
             variant="ghost"
             size="sm"
-            className="h-10 w-10 shrink-0 rounded-xl p-0 text-white/60"
+            className="h-10 w-10 shrink-0 rounded-full p-0 text-black/50 hover:text-black"
             onClick={() => speak("I'm ready when you are. Tell me who to pay and how much.")}
             aria-label="Speak assistant hint"
           >

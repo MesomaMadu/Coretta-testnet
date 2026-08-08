@@ -103,17 +103,17 @@ export default function EmailAuthModal({ open, onClose, onSuccess }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0f172a]/95 p-6">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border border-black/10 bg-white p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Sign in with email</h2>
-          <button type="button" onClick={onClose} className="text-white/50 hover:text-white">
+          <h2 className="text-lg font-semibold text-black">Sign in with email</h2>
+          <button type="button" onClick={onClose} className="text-black/40 hover:text-black">
             <X className="h-5 w-5" />
           </button>
         </div>
 
         {error && (
-          <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+          <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-50 px-3 py-2 text-xs text-rose-700">
             {error}
           </p>
         )}
@@ -121,14 +121,14 @@ export default function EmailAuthModal({ open, onClose, onSuccess }: Props) {
         {step === "email" ? (
           <form onSubmit={handleEmail} className="space-y-4">
             <label className="block">
-              <span className="mb-1 flex items-center gap-2 text-sm text-white/70">
+              <span className="mb-1 flex items-center gap-2 text-sm text-black/70">
                 <Mail className="h-4 w-4" /> Enter your email address
               </span>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-white outline-none focus:border-[#8F5CFF]/50"
+                className="w-full rounded-xl border border-black/10 bg-[#F5F5F5] px-4 py-2.5 text-black outline-none focus:border-[#0A0A0A]/50"
                 placeholder="you@example.com"
                 required
               />
@@ -139,21 +139,21 @@ export default function EmailAuthModal({ open, onClose, onSuccess }: Props) {
           </form>
         ) : (
           <form onSubmit={handleOtp} className="space-y-4">
-            <p className="text-sm text-white/60">
+            <p className="text-sm text-black/60">
               Enter the verification code sent to{" "}
-              <span className="text-white">{email}</span>
+              <span className="text-black font-medium">{email}</span>
             </p>
             <input
               type="text"
               inputMode="numeric"
               value={otp}
               onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
-              className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-center font-mono text-lg tracking-[0.4em] text-white"
+              className="w-full rounded-xl border border-black/10 bg-[#F5F5F5] px-4 py-2.5 text-center font-mono text-lg tracking-[0.4em] text-black"
               placeholder="••••••"
               maxLength={6}
               autoComplete="one-time-code"
             />
-            <p className="text-center text-[10px] text-white/35">Code expires in 5 minutes</p>
+            <p className="text-center text-[10px] text-black/40">Code expires in 5 minutes</p>
             <Button type="submit" variant="primary" className="w-full" disabled={loading}>
               {loading ? "Verifying…" : "Verify"}
             </Button>
@@ -161,7 +161,7 @@ export default function EmailAuthModal({ open, onClose, onSuccess }: Props) {
               type="button"
               disabled={resendIn > 0 || loading}
               onClick={() => void sendCode()}
-              className="w-full text-xs text-white/45 hover:text-white disabled:opacity-40"
+              className="w-full text-xs text-black/45 hover:text-black disabled:opacity-40"
             >
               {resendIn > 0 ? `Resend in ${resendIn}s` : "Resend code"}
             </button>

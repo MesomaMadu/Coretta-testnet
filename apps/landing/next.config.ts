@@ -39,6 +39,8 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "font-src 'self' https://fonts.gstatic.com",
               "img-src 'self' data: blob: https:",
+              // Hero/use-case videos load from CloudFront (default-src 'self' would block them).
+              "media-src 'self' blob: https://d8j0ntlcm91z4.cloudfront.net https://*.cloudfront.net",
               `connect-src ${connectSrc}`,
               "frame-ancestors 'none'",
             ].join("; "),

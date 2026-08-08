@@ -28,7 +28,7 @@ export default function Hero() {
 
   return (
     <section
-      className="relative z-10 flex min-h-dvh flex-col items-center justify-center overflow-hidden px-4 pb-24 pt-32 text-center md:px-8 md:pt-36"
+      className="hero-section relative z-10 flex min-h-dvh flex-col items-center justify-center overflow-hidden px-4 pb-24 pt-32 text-center md:px-8 md:pt-36"
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}
     >

@@ -28,12 +28,12 @@ export default function TransactionPreviewCard({
 
   return (
     <div
-      className="rounded-2xl border border-cyan-400/30 bg-gradient-to-b from-cyan-950/40 to-violet-950/30 p-4 shadow-[0_0_32px_rgba(34,211,238,0.12)]"
+      className="rounded-2xl border border-black/15 bg-white p-4 shadow-sm"
       data-preview-hash={preview.previewHash}
       data-locked={locked ? "true" : "false"}
     >
       <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-cyan-300">
+        <div className="flex items-center gap-2 text-black">
           <Shield className="h-4 w-4" />
           <span className="text-xs font-semibold uppercase tracking-wider">
             Locked preview
@@ -43,7 +43,7 @@ export default function TransactionPreviewCard({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-full p-1 text-white/50 hover:bg-white/10 hover:text-white"
+            className="rounded-full p-1 text-black/40 hover:bg-black/5 hover:text-black"
             aria-label="Cancel preview"
           >
             <X className="h-4 w-4" />
@@ -52,7 +52,7 @@ export default function TransactionPreviewCard({
       </div>
 
       {preview.riskWarning && (
-        <p className="mb-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+        <p className="mb-3 rounded-lg border border-amber-400/40 bg-amber-50 px-3 py-2 text-xs text-amber-900">
           {preview.riskWarning}
         </p>
       )}
@@ -66,17 +66,17 @@ export default function TransactionPreviewCard({
               value={`${preview.recipientCount ?? preview.batch.length}`}
             />
             <Row label="Total" value={`${preview.totalAmount ?? preview.amount} ${preview.asset}`} />
-            <div className="max-h-40 space-y-2 overflow-y-auto rounded-lg border border-white/8 bg-black/20 p-2">
+            <div className="max-h-40 space-y-2 overflow-y-auto rounded-lg border border-black/10 bg-[#F5F5F5] p-2">
               {preview.batch.map((r) => (
                 <div
                   key={`${r.name}-${r.amount}`}
-                  className="flex justify-between gap-2 border-b border-white/5 pb-2 text-xs last:border-0 last:pb-0"
+                  className="flex justify-between gap-2 border-b border-black/5 pb-2 text-xs last:border-0 last:pb-0"
                 >
-                  <span className="text-white/70">
+                  <span className="text-black/70">
                     {r.name}{" "}
-                    <span className="text-white/35">({r.identityType})</span>
+                    <span className="text-black/40">({r.identityType})</span>
                   </span>
-                  <span className="font-medium text-white">
+                  <span className="font-medium text-black">
                     {r.amount} {preview.asset}
                   </span>
                 </div>
@@ -101,7 +101,7 @@ export default function TransactionPreviewCard({
         <Row label="Path" value={preview.executionPath} />
       </dl>
 
-      <p className="mt-3 font-mono text-[10px] text-white/35 break-all">
+      <p className="mt-3 break-all font-mono text-[10px] text-black/40">
         Hash: {preview.previewHash.slice(0, 24)}…
       </p>
 
@@ -128,13 +128,13 @@ export default function TransactionPreviewCard({
       )}
 
       {phase === "awaiting_signature" && (
-        <p className="mt-3 text-center text-xs text-amber-300/90">
+        <p className="mt-3 text-center text-xs text-amber-700">
           Approve in your wallet…
         </p>
       )}
 
       {!connected && phase === "preview" && (
-        <p className="mt-2 text-center text-xs text-white/45">
+        <p className="mt-2 text-center text-xs text-black/45">
           Connect a wallet on Arc Testnet to enable signing.
         </p>
       )}
@@ -144,9 +144,9 @@ export default function TransactionPreviewCard({
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex justify-between gap-4 border-b border-white/5 pb-2 last:border-0">
-      <dt className="text-white/45">{label}</dt>
-      <dd className="text-right font-medium text-white">{value}</dd>
+    <div className="flex justify-between gap-4 border-b border-black/5 pb-2 last:border-0">
+      <dt className="text-black/45">{label}</dt>
+      <dd className="text-right font-medium text-black">{value}</dd>
     </div>
   );
 }

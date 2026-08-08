@@ -33,19 +33,19 @@ export default function OnboardingFlow({ open, onComplete }: Props) {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[90] flex items-center justify-center bg-[var(--ar-overlay)] p-4 backdrop-blur-md"
+        className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
       >
         <motion.div
           initial={{ opacity: 0, y: 16, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-          className="w-full max-w-md rounded-2xl border border-[var(--ar-border)] bg-[var(--ar-surface)] p-6 shadow-[0_0_48px_rgba(124,77,255,0.12)]"
+          className="w-full max-w-md rounded-2xl border border-black/10 bg-white p-6 shadow-2xl"
         >
-          <p className="text-xs font-medium uppercase tracking-widest text-violet-400/80">
+          <p className="text-xs font-medium uppercase tracking-widest text-[#0A0A0A]">
             {AGENT_NAME}
           </p>
-          <h2 className="mt-2 text-xl font-semibold text-white">{t("welcome")}</h2>
-          <p className="mt-3 text-sm leading-relaxed text-white/65">{t("askName")}</p>
+          <h2 className="mt-2 text-xl font-semibold text-black">{t("welcome")}</h2>
+          <p className="mt-3 text-sm leading-relaxed text-black/60">{t("askName")}</p>
 
           <form onSubmit={submit} className="mt-6 space-y-4">
             <input
@@ -54,15 +54,15 @@ export default function OnboardingFlow({ open, onComplete }: Props) {
               placeholder="Alex"
               autoFocus
               maxLength={40}
-              className="w-full rounded-xl border border-[var(--ar-border)] bg-[var(--ar-bg-elevated)] px-4 py-3 text-sm text-white outline-none transition focus:border-[#7C4DFF]/60 focus:shadow-[0_0_0_3px_rgba(124,77,255,0.15)]"
+              className="w-full rounded-xl border border-black/10 bg-[#F5F5F5] px-4 py-3 text-sm text-black outline-none transition focus:border-black/30 focus:shadow-[0_0_0_3px_rgba(10,10,10,0.08)]"
             />
             <Button type="submit" variant="primary" className="w-full" disabled={!name.trim()}>
               Continue
             </Button>
           </form>
 
-          <p className="mt-4 text-center text-[11px] text-white/35">
-            Conversational identity only — not legal or KYC name. {BRAND_NAME} keeps this private.
+          <p className="mt-4 text-center text-[11px] text-black/40">
+            Conversational identity only, not legal or KYC name. {BRAND_NAME} keeps this private.
           </p>
         </motion.div>
       </motion.div>

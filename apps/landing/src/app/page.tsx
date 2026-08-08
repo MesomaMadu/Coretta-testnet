@@ -1,31 +1,27 @@
-import Background from "@/components/landing/Background";
-import Navbar from "@/components/landing/Navbar";
-import Hero from "@/components/landing/Hero";
-import LandingHoverDemo from "@/components/landing/LandingHoverDemo";
-import Features from "@/components/landing/Features";
-import HowItWorks from "@/components/landing/HowItWorks";
-import WhyCoretta from "@/components/landing/WhyCoretta";
-import MeetDamian from "@/components/landing/MeetDamian";
-import NetworkVisualization from "@/components/landing/NetworkVisualization";
-import TrustSecurity from "@/components/landing/TrustSecurity";
-import More from "@/components/landing/More";
+import HaloNavbar from "@/components/landing/HaloNavbar";
+import HaloHero from "@/components/landing/HaloHero";
+import HaloInfoSection from "@/components/landing/HaloInfoSection";
+import HaloDamianSection from "@/components/landing/HaloDamianSection";
+import HaloUseCases from "@/components/landing/HaloUseCases";
+import HaloSecurityStrip from "@/components/landing/HaloSecurityStrip";
 import Footer from "@/components/landing/Footer";
 
+/**
+ * Landing: Halo fintech layout.
+ * Full-height header (nav + video hero), info cards, Damian intro, use cases, security.
+ */
 export default function HomePage() {
   return (
-    <main className="relative min-h-dvh overflow-x-hidden text-[var(--ar-fg)]">
-      <Background />
-      <Navbar />
-      <Hero />
-      <LandingHoverDemo />
-      <Features />
-      <HowItWorks />
-      <WhyCoretta />
-      <MeetDamian />
-      <NetworkVisualization />
-      <TrustSecurity />
-      <More />
+    <div className="flex min-h-dvh flex-col bg-[#F5F5F5]">
+      <div className="flex h-screen flex-col overflow-hidden">
+        <HaloNavbar />
+        <HaloHero />
+      </div>
+      <HaloInfoSection />
+      <HaloDamianSection />
+      <HaloUseCases />
+      <HaloSecurityStrip />
       <Footer />
-    </main>
+    </div>
   );
 }

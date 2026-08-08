@@ -24,7 +24,7 @@ export interface TransactionPreview {
   receiveAsset?: AssetSymbol;
   receiveAmount?: string;
   swapRoute?: string;
-  sponsorship: "Circle Paymaster — gas sponsored in USDC";
+  sponsorship: "Circle Paymaster, gas sponsored in USDC";
   network: "Arc Testnet";
   executionPath: string;
   previewHash: string;

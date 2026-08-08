@@ -9,6 +9,7 @@
   "scripts": {
     "build": "npm run build -w @arcremit/shared && npm run build -w @arcremit/chain && npm run build -w @arcremit/db && npm run build -w @arcremit/api && npm run build -w @arcremit/web && npm run build:landing",
     "build:landing": "npm install --prefix apps/landing --no-audit --no-fund --legacy-peer-deps && npm run build --prefix apps/landing",
+    "lint": "npm run build -w @arcremit/shared && npm run build -w @arcremit/chain && npm run build -w @arcremit/db && npm run build -w @arcremit/api && npm run build -w @arcremit/web",
     "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @arcremit/api\" \"npm run dev -w @arcremit/web\"",
     "dev:landing": "npm run dev --prefix apps/landing",
     "dev:api": "npm run dev -w @arcremit/api",

@@ -11,8 +11,10 @@ import {
   resolveRecipientWallet,
   getOwnerKeyForWallet,
 } from "./wallet.js";
+import { log } from "../lib/log.js";
+import { config } from "../config.js";
 
-const client = createArcPublicClient();
+const client = createArcPublicClient(config.arcRpcUrl);
 
 export async function createRemittance({
   senderUserId,
@@ -125,6 +127,7 @@ export async function executeRemittance(transferId: string) {
       recipient: transfer.recipientWallet.scaAddress as Address,
       amountMicro: transfer.amountMicro,
     });
+    // Paymaster + bundler path lives inside sendUsdcTransferUserOp (Circle Paymaster v0.7).
 
     const updated = await prisma.$transaction(async (tx) => {
       const t = await tx.transfer.update({
@@ -166,6 +169,13 @@ export async function executeRemittance(transferId: string) {
     return updated;
   } catch (err) {
     const message = err instanceof Error ? err.message : "UNKNOWN_ERROR";
+    log.remit("executeRemittance failed", { transferId, message });
+    if (/paymaster|permit|sponsorship/i.test(message)) {
+      log.paymaster("Paymaster-related failure", { transferId, message });
+    }
+    if (/rpc|rate limit|ECONN|timeout/i.test(message)) {
+      log.rpc("RPC-related failure", { transferId, message });
+    }
     await prisma.transfer.update({
       where: { id: transferId },
       data: { state: "FAILED", failureReason: message },

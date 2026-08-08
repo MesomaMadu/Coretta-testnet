@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useAccount, useSignMessage, useDisconnect } from "wagmi";
+import { useAccount, useSignMessage } from "wagmi";
 import { arcTestnet } from "@/lib/chains";
 import { apiFetch, getApiToken, setApiToken, clearApiToken } from "@/lib/api";
 import {
@@ -24,7 +24,6 @@ let autoPromptedForAddress: string | null = null;
 export function useWalletSession() {
   const { address, isConnected, chainId } = useAccount();
   const { signMessageAsync } = useSignMessage();
-  const { disconnect } = useDisconnect();
   const [verified, setVerified] = useState(false);
   const [smartWalletActive, setSmartActive] = useState(false);
   const [verifying, setVerifying] = useState(false);
@@ -210,10 +209,12 @@ export function useWalletSession() {
         void syncBindings();
         return true;
       } catch {
+        // Keep the wallet connected. Rejecting the ownership signature or a
+        // transient API error must not force a disconnect. User can retry via
+        // "Sign now" without losing the connector session.
         clearWalletVerification(address);
         setVerified(false);
         setUsageMetrics(null);
-        disconnect();
         return false;
       }
     })();
@@ -224,7 +225,7 @@ export function useWalletSession() {
       ownershipVerifyInFlight = null;
       setVerifying(false);
     }
-  }, [address, chainId, signMessageAsync, disconnect, refreshUsage, syncBindings]);
+  }, [address, chainId, signMessageAsync, refreshUsage, syncBindings]);
 
   // One-time ownership sign immediately after a fresh wallet connect.
   useEffect(() => {

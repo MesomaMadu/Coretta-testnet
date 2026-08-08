@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 const STEPS = [
   {
     title: "You're connected",
-    body: "Your EVM wallet is linked. Coretta verified ownership with a signed message — no gas cost.",
+    body: "Your EVM wallet is linked. Coretta verified ownership with a signed message, no gas cost.",
   },
   {
     title: "Activate Smart Wallet",
@@ -17,7 +17,7 @@ const STEPS = [
   },
   {
     title: "Chat with Damian",
-    body: `Use the ${AGENT_NAME} panel to describe transfers in plain language. Damian builds a locked preview — nothing sends without your approval.`,
+    body: `Use the ${AGENT_NAME} panel to describe transfers in plain language. Damian builds a locked preview; nothing sends without your approval.`,
   },
   {
     title: "Confirm & sign",
@@ -29,7 +29,7 @@ const STEPS = [
   },
   {
     title: "Email is optional",
-    body: "You can send with your connected wallet right away — the smart wallet binds to your EOA. Link email later in Settings for recovery when email delivery is configured.",
+    body: "You can send with your connected wallet right away. The smart wallet binds to your EOA. Link email later in Settings for recovery when email delivery is configured.",
   },
 ] as const;
 
@@ -53,33 +53,33 @@ export default function WalletTutorial({ open, onComplete, onSkip }: Props) {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[85] flex items-center justify-center bg-[var(--ar-overlay)] p-4 backdrop-blur-md"
+        className="fixed inset-0 z-[85] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
       >
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          className="relative w-full max-w-md rounded-2xl border border-[var(--ar-border)] bg-[var(--ar-surface)] p-6 shadow-[0_0_48px_rgba(124,77,255,0.12)]"
+          className="relative w-full max-w-md rounded-2xl border border-black/10 bg-white p-6 shadow-2xl"
         >
           <button
             type="button"
             onClick={onSkip}
-            className="absolute right-4 top-4 rounded-full p-1 text-white/40 hover:bg-white/10 hover:text-white"
+            className="absolute right-4 top-4 rounded-full p-1 text-black/40 hover:bg-black/5 hover:text-black"
             aria-label="Skip tutorial"
           >
             <X className="h-4 w-4" />
           </button>
 
-          <p className="text-xs font-medium uppercase tracking-widest text-[#8F5CFF]">
+          <p className="text-xs font-medium uppercase tracking-widest text-[#0A0A0A]">
             Quick tour · Step {step + 1} of {STEPS.length}
           </p>
-          <h2 className="mt-2 text-lg font-semibold text-white">{current.title}</h2>
-          <p className="mt-3 text-sm leading-relaxed text-white/65">{current.body}</p>
+          <h2 className="mt-2 text-lg font-semibold text-black">{current.title}</h2>
+          <p className="mt-3 text-sm leading-relaxed text-black/60">{current.body}</p>
 
           <div className="mt-6 flex gap-1.5">
             {STEPS.map((_, i) => (
               <span
                 key={i}
-                className={`h-1 flex-1 rounded-full ${i <= step ? "bg-[#8F5CFF]" : "bg-white/15"}`}
+                className={`h-1 flex-1 rounded-full ${i <= step ? "bg-[#0A0A0A]" : "bg-black/10"}`}
               />
             ))}
           </div>
@@ -97,7 +97,7 @@ export default function WalletTutorial({ open, onComplete, onSkip }: Props) {
             <button
               type="button"
               onClick={onSkip}
-              className="text-xs text-white/40 hover:text-white/70"
+              className="text-xs text-black/40 hover:text-black/70"
             >
               Skip tutorial
             </button>

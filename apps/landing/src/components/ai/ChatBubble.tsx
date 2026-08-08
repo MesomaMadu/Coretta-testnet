@@ -19,7 +19,7 @@ export default function ChatBubble({
     <div className={cn("flex flex-col", isUser ? "items-end" : "items-start")}>
       <div
         className={cn(
-          "max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
+          "max-w-[85%] px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap",
           isUser ? "damian-bubble-user" : "damian-bubble-assistant",
         )}
       >

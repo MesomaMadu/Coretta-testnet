@@ -8,9 +8,9 @@ import Logo from "./Logo";
 import { springSnappy } from "@/lib/motion";
 
 const NAV = [
+  { label: "Product", href: "/#showcase" },
   { label: "Features", href: "/#features" },
-  { label: "Why", href: "/#why" },
-  { label: "Network", href: "/#network" },
+  { label: "How", href: "/#how" },
   { label: "Security", href: "/#security" },
 ] as const;
 

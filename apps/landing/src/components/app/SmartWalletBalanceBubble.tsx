@@ -14,13 +14,26 @@ const client = createPublicClient({
 });
 
 export function useWalletBalances() {
-  const { address } = useAccount();
+  const { address, isConnected } = useAccount();
   const [usdc, setUsdc] = useState<string | null>(null);
   const [eurc, setEurc] = useState<string | null>(null);
   const [smartAddress, setSmartAddress] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
 
+  const clear = useCallback(() => {
+    setUsdc(null);
+    setEurc(null);
+    setSmartAddress(null);
+    setUpdatedAt(null);
+  }, []);
+
   const refresh = useCallback(async () => {
+    // Only load balances when a wallet is actually connected.
+    if (!isConnected || !address) {
+      clear();
+      return;
+    }
+
     const token = getApiToken();
     if (token) {
       try {
@@ -36,13 +49,6 @@ export function useWalletBalances() {
       } catch {
         /* fall through to on-chain */
       }
-    }
-
-    if (!address) {
-      setUsdc(null);
-      setEurc(null);
-      setSmartAddress(null);
-      return;
     }
 
     try {
@@ -68,55 +74,56 @@ export function useWalletBalances() {
       setUsdc(null);
       setEurc(null);
     }
-  }, [address]);
+  }, [address, isConnected, clear]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  return { usdc, eurc, smartAddress, updatedAt, refresh };
+  return { usdc, eurc, smartAddress, updatedAt, refresh, isConnected };
 }
 
 export function SmartWalletBalanceBubble() {
   const [open, setOpen] = useState(false);
-  const { usdc, eurc, smartAddress, updatedAt } = useWalletBalances();
+  const { usdc, eurc, smartAddress, updatedAt, isConnected } = useWalletBalances();
 
-  if (usdc === null && eurc === null) return null;
+  // Hide entirely when wallet is disconnected or balances are unavailable.
+  if (!isConnected || (usdc === null && eurc === null)) return null;
 
   return (
     <div className="mx-4 mb-2">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full rounded-xl border border-[#8F5CFF]/25 bg-[#8F5CFF]/10 px-4 py-3 text-left transition hover:border-[#8F5CFF]/40"
+        className="w-full rounded-xl border border-black/10 bg-white px-4 py-3 text-left shadow-sm transition hover:border-black/25"
       >
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-[10px] uppercase tracking-wider text-[#8F5CFF]">Smart Wallet</p>
-            <p className="text-sm font-medium text-white">
-              Balance: {usdc ?? "—"} USDC
+            <p className="text-[10px] uppercase tracking-wider text-black/55">Smart Wallet</p>
+            <p className="text-sm font-medium text-black">
+              Balance: {usdc ?? "0"} USDC
             </p>
           </div>
           {open ? (
-            <ChevronUp className="h-4 w-4 text-white/40" />
+            <ChevronUp className="h-4 w-4 text-black/40" />
           ) : (
-            <ChevronDown className="h-4 w-4 text-white/40" />
+            <ChevronDown className="h-4 w-4 text-black/40" />
           )}
         </div>
-        {!open && <p className="mt-1 text-[10px] text-white/40">View</p>}
+        {!open && <p className="mt-1 text-[10px] text-black/40">View</p>}
       </button>
 
       {open && (
-        <div className="mt-1 rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-xs text-white/70">
+        <div className="mt-1 rounded-xl border border-black/10 bg-white px-4 py-3 text-xs text-black/70 shadow-sm">
           {smartAddress && (
-            <p className="font-mono text-[10px] break-all">
+            <p className="break-all font-mono text-[10px]">
               {smartAddress.slice(0, 6)}…{smartAddress.slice(-4)}
             </p>
           )}
-          <p className="mt-2">USDC: {usdc ?? "—"}</p>
+          <p className="mt-2">USDC: {usdc ?? "0"}</p>
           {eurc !== null && <p>EURC: {eurc}</p>}
-          <p className="mt-2 text-white/40">
-            Last updated: {updatedAt ? "Just now" : "—"}
+          <p className="mt-2 text-black/40">
+            Last updated: {updatedAt ? "Just now" : "n/a"}
           </p>
         </div>
       )}

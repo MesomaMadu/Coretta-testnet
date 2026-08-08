@@ -2,24 +2,21 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "@arcremit/db";
 import { formatMicroToUsdc, ARC_EXPLORER } from "@arcremit/shared";
-import { loginWithIdentity, resolveSession } from "../services/auth.js";
+import { resolveSession } from "../services/auth.js";
 import { createRemittance, executeRemittance } from "../services/orchestrator.js";
 import {
   getWalletBalanceMicro,
   findUserByIdentity,
 } from "../services/wallet.js";
-import { createOtp, verifyOtp, createRebindOtp, verifyRebindOtp } from "../services/otp.js";
-import { sendOtpEmail } from "../services/email.js";
 import {
   activateSmartWallet,
   bindPrimaryWallet,
-  consumeRebindToken,
   getWalletBindingStatus,
-  issueRebindToken,
-  replacePrimaryWallet,
 } from "../services/wallet-binding.js";
 import { createAuditEvent } from "../services/audit.js";
 import { touchPresence, getActiveCount } from "../services/presence.js";
+import { executeTokenSwap } from "../services/swap.js";
+import { log } from "../lib/log.js";
 import {
   createConversation,
   createFeedback,
@@ -39,29 +36,24 @@ import {
   anonymousUsageMetrics,
   getUserUsageMetrics,
   getWalletUsageMetrics,
-  incrementUsage,
   trackUsageEvent,
 } from "../services/limits.js";
 import { determineOptimalRoute } from "../services/router.js";
-import { recordRiskEvent } from "../services/risk.js";
 import { authenticateWalletOwnership } from "../services/wallet-auth.js";
 import { normalizeWalletAddress } from "@arcremit/shared";
 
 export async function registerRoutes(app: FastifyInstance) {
   app.get("/health", async () => ({ ok: true, service: "arcremit-api" }));
 
+  /** Email auth temporarily disabled — wallet-only. */
   app.get("/v1/auth/email-status", async (_req, reply) => {
-    const apiKeyConfigured = Boolean(process.env.EMAIL_PROVIDER_API_KEY);
-    const fromAddress = process.env.EMAIL_FROM_ADDRESS || "Coretta Verification <onboarding@resend.dev>";
-    const devMode = process.env.DEV_MODE === "true";
     return reply.send({
-      configured: apiKeyConfigured,
-      provider: apiKeyConfigured ? "Resend API" : (devMode ? "Dev Console Simulation (DEV_MODE=true)" : "None"),
-      fromAddress,
-      devMode,
-      reason: !apiKeyConfigured
-        ? "EMAIL_PROVIDER_API_KEY is not configured in environment variables (.env). In development mode (DEV_MODE=true), OTP codes are output directly to the server console log and dev response payload."
-        : `Email provider configured via Resend with sender ${fromAddress}. Note: Default Resend onboarding sender only delivers to registered Resend account owner unless a custom domain is verified.`
+      configured: false,
+      provider: "Disabled",
+      fromAddress: null,
+      devMode: process.env.DEV_MODE === "true",
+      reason:
+        "Email login and OTP are temporarily disabled. Connect a browser wallet and verify ownership to authenticate.",
     });
   });
 
@@ -135,79 +127,17 @@ export async function registerRoutes(app: FastifyInstance) {
     return reply.send({ activeUsers: getActiveCount() });
   });
 
-  app.post("/v1/auth/otp/send", async (req, reply) => {
-    const body = z.object({ email: z.string().email() }).parse(req.body);
-    try {
-      const existingUser = await findUserByIdentity("email", body.email);
-      if (existingUser) {
-        await incrementUsage(existingUser.id, "otpRequestCount");
-      }
-      const { code } = await createOtp(body.email);
-      await sendOtpEmail(body.email, code);
-      const isDev = process.env.DEV_MODE === "true" && !process.env.EMAIL_PROVIDER_API_KEY;
-      return reply.send({ ok: true, expiresInSeconds: 300, devCode: isDev ? code : undefined });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "SEND_FAILED";
-      if (message.startsWith("RESEND_COOLDOWN:")) {
-        const seconds = message.split(":")[1];
-        return reply.code(429).send({
-          code: "RESEND_COOLDOWN",
-          message: `Please wait ${seconds} seconds before requesting a new code.`,
-        });
-      }
-      if (message === "EMAIL_PROVIDER_NOT_CONFIGURED") {
-        return reply.code(503).send({
-          code: "EMAIL_PROVIDER_NOT_CONFIGURED",
-          message: "Email delivery is not configured. Set EMAIL_PROVIDER_API_KEY and EMAIL_FROM_ADDRESS.",
-        });
-      }
-      return reply.code(502).send({ code: "EMAIL_DELIVERY_FAILED", message: "Could not send verification email." });
-    }
+  app.post("/v1/auth/otp/send", async (_req, reply) => {
+    return reply.code(410).send({
+      code: "EMAIL_AUTH_DISABLED",
+      message: "Email OTP is temporarily disabled. Use wallet connection.",
+    });
   });
 
-  app.post("/v1/auth/otp/verify", async (req, reply) => {
-    const body = z
-      .object({
-        email: z.string().email(),
-        code: z.string().min(4).max(8),
-      })
-      .parse(req.body);
-
-    const existingUser = await findUserByIdentity("email", body.email);
-    const ok = await verifyOtp(body.email, body.code);
-    if (!ok) {
-      if (existingUser) {
-        await recordRiskEvent(existingUser.id, "otp_velocity");
-        await createAuditEvent({
-          actorId: existingUser.id,
-          action: "OTP_VERIFICATION_FAILED",
-          metadata: { email: body.email },
-        });
-      }
-      return reply.code(401).send({
-        code: "INVALID_OTP",
-        message: "Invalid or expired verification code.",
-      });
-    }
-
-    const { token, user, expiresAt } = await loginWithIdentity("email", body.email);
-    await createAuditEvent({
-      actorId: user.id,
-      action: "EMAIL_LOGIN_SUCCESS",
-      metadata: { email: body.email },
-    });
-    const wallet = user.wallets[0];
-    return reply.send({
-      token,
-      expiresAt: expiresAt.toISOString(),
-      user: {
-        id: user.id,
-        walletAddress: wallet?.scaAddress,
-        identities: user.identities.map((i) => ({
-          type: i.type,
-          value: i.normalizedValue,
-        })),
-      },
+  app.post("/v1/auth/otp/verify", async (_req, reply) => {
+    return reply.code(410).send({
+      code: "EMAIL_AUTH_DISABLED",
+      message: "Email OTP is temporarily disabled. Use wallet connection.",
     });
   });
 
@@ -313,30 +243,10 @@ export async function registerRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/v1/auth/login", async (req, reply) => {
-    const body = z
-      .object({
-        type: z.enum(["email", "phone"]),
-        value: z.string().min(3),
-      })
-      .parse(req.body);
-
-    const { token, user, expiresAt } = await loginWithIdentity(
-      body.type,
-      body.value,
-    );
-    const wallet = user.wallets[0];
-    return reply.send({
-      token,
-      expiresAt: expiresAt.toISOString(),
-      user: {
-        id: user.id,
-        walletAddress: wallet?.scaAddress,
-        identities: user.identities.map((i) => ({
-          type: i.type,
-          value: i.normalizedValue,
-        })),
-      },
+  app.post("/v1/auth/login", async (_req, reply) => {
+    return reply.code(410).send({
+      code: "EMAIL_AUTH_DISABLED",
+      message: "Email/phone login is temporarily disabled. Use POST /v1/auth/wallet.",
     });
   });
 
@@ -406,77 +316,26 @@ export async function registerRoutes(app: FastifyInstance) {
     return bindPrimaryWallet(user.id, body.primaryWalletAddress);
   });
 
-  app.post("/v1/wallet/rebind/send-otp", async (req, reply) => {
-    const user = req.user!;
-    const emailIdentity = user.identities.find((i) => i.type === "email");
-    if (!emailIdentity) {
-      return reply.code(400).send({
-        code: "EMAIL_NOT_LINKED",
-        message: "Link and verify an email before replacing your wallet.",
-      });
-    }
-    try {
-      const { code } = await createRebindOtp(emailIdentity.normalizedValue);
-      await sendOtpEmail(emailIdentity.normalizedValue, code);
-      await createAuditEvent({
-        actorId: user.id,
-        action: "RECOVERY_INITIATED",
-        metadata: { email: emailIdentity.normalizedValue },
-      });
-      return reply.send({ ok: true, email: emailIdentity.normalizedValue });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "SEND_FAILED";
-      if (message.startsWith("RESEND_COOLDOWN:")) {
-        const seconds = message.split(":")[1];
-        return reply.code(429).send({ code: "RESEND_COOLDOWN", message: `Wait ${seconds}s` });
-      }
-      return reply.code(502).send({ code: "EMAIL_DELIVERY_FAILED", message: "Could not send code." });
-    }
-  });
-
-  app.post("/v1/wallet/rebind/verify-otp", async (req, reply) => {
-    const user = req.user!;
-    const body = z.object({ code: z.string().min(4).max(8) }).parse(req.body);
-    const emailIdentity = user.identities.find((i) => i.type === "email");
-    if (!emailIdentity) {
-      return reply.code(400).send({ code: "EMAIL_NOT_LINKED", message: "No linked email." });
-    }
-    const ok = await verifyRebindOtp(emailIdentity.normalizedValue, body.code);
-    if (!ok) {
-      return reply.code(401).send({ code: "INVALID_OTP", message: "Invalid or expired code." });
-    }
-    const rebindToken = issueRebindToken(user.id, emailIdentity.normalizedValue);
-    return reply.send({ rebindToken, expiresInSeconds: 600 });
-  });
-
-  app.post("/v1/wallet/rebind/complete", async (req, reply) => {
-    const user = req.user!;
-    const body = z
-      .object({
-        rebindToken: z.string().min(16),
-        newWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-        previousWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
-      })
-      .parse(req.body);
-
-    if (!consumeRebindToken(body.rebindToken, user.id)) {
-      return reply.code(401).send({ code: "INVALID_REBIND_TOKEN", message: "Rebind session expired." });
-    }
-
-    const result = await replacePrimaryWallet(
-      user.id,
-      body.newWalletAddress,
-      body.previousWalletAddress,
-    );
-    await createAuditEvent({
-      actorId: user.id,
-      action: "RECOVERY_COMPLETED",
-      metadata: {
-        newWalletAddress: body.newWalletAddress.toLowerCase(),
-        previousWalletAddress: result.previousWalletAddress,
-      },
+  app.post("/v1/wallet/rebind/send-otp", async (_req, reply) => {
+    return reply.code(410).send({
+      code: "EMAIL_AUTH_DISABLED",
+      message: "Email-based wallet rebind is temporarily disabled. Disconnect and reconnect the new wallet, then re-verify ownership.",
     });
-    return reply.send(result);
+  });
+
+  app.post("/v1/wallet/rebind/verify-otp", async (_req, reply) => {
+    return reply.code(410).send({
+      code: "EMAIL_AUTH_DISABLED",
+      message: "Email-based wallet rebind is temporarily disabled.",
+    });
+  });
+
+  app.post("/v1/wallet/rebind/complete", async (_req, reply) => {
+    return reply.code(410).send({
+      code: "EMAIL_AUTH_DISABLED",
+      message:
+        "Email-based wallet rebind is temporarily disabled. Disconnect, connect the new wallet, and complete ownership verification.",
+    });
   });
 
   app.get("/v1/audit", async (req) => {
@@ -587,6 +446,11 @@ export async function registerRoutes(app: FastifyInstance) {
           walletAddress: eoa,
         },
       });
+      log.info("remit", "Remittance settled", {
+        transferId: settled.id,
+        state: settled.state,
+        txHash: settled.txHash,
+      });
       return reply.send({
         transferId: settled.id,
         state: settled.state,
@@ -599,12 +463,74 @@ export async function registerRoutes(app: FastifyInstance) {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "EXECUTION_FAILED";
+      log.remit("Remittance execution failed", {
+        transferId: transfer.id,
+        message,
+      });
       return reply.code(502).send({
         transferId: transfer.id,
         state: "FAILED",
         message,
       });
     }
+  });
+
+  /**
+   * Token swap on Arc Testnet via Circle App Kit.
+   * Rejects USDC↔NATIVE (gas token is already USDC on Arc).
+   */
+  app.post("/v1/swap", async (req, reply) => {
+    const body = z
+      .object({
+        tokenIn: z.enum(["USDC", "EURC", "NATIVE", "USDT"]),
+        tokenOut: z.enum(["USDC", "EURC", "NATIVE", "USDT"]),
+        amountIn: z.string().min(1).max(32),
+        /** Optional override; defaults to user's first SCA */
+        walletAddress: z
+          .string()
+          .regex(/^0x[a-fA-F0-9]{40}$/)
+          .optional(),
+      })
+      .parse(req.body);
+
+    const user = req.user!;
+    const sca =
+      body.walletAddress ??
+      user.wallets[0]?.scaAddress ??
+      user.identities.find((i) => i.type === "wallet")?.normalizedValue;
+
+    if (!sca) {
+      return reply.code(400).send({
+        code: "WALLET_MISSING",
+        message: "No smart wallet on account. Connect wallet and verify ownership first.",
+      });
+    }
+
+    const eoa =
+      user.identities.find((i) => i.type === "wallet")?.normalizedValue ??
+      user.wallets[0]?.ownerAddress ??
+      null;
+
+    const result = await executeTokenSwap({
+      userId: user.id,
+      walletAddress: sca,
+      tokenIn: body.tokenIn,
+      tokenOut: body.tokenOut,
+      amountIn: body.amountIn,
+      eoaAddress: eoa,
+    });
+
+    if (!result.ok) {
+      const status =
+        result.code === "ALREADY_GAS_TOKEN"
+          ? 400
+          : result.code === "KIT_KEY_MISSING" || result.code === "CIRCLE_CONFIG_MISSING"
+            ? 503
+            : 422;
+      return reply.code(status).send(result);
+    }
+
+    return reply.send(result);
   });
 
   app.get("/v1/transfers", async (req) => {

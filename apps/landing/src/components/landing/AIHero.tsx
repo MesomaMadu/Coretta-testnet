@@ -31,7 +31,7 @@ export default function AIHero() {
   };
 
   return (
-    <section className="relative z-10 px-4 pb-12 pt-28 md:px-8 md:pt-32">
+    <section className="hero-section relative z-10 px-4 pb-12 pt-28 md:px-8 md:pt-32">
       <div className="mx-auto grid max-w-6xl items-center gap-12 lg:grid-cols-2">
         <div className="text-center">
           <motion.p

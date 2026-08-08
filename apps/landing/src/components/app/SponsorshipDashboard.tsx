@@ -79,7 +79,6 @@ export default function SponsorshipDashboard() {
     return () => window.clearInterval(interval);
   }, [fetchMetrics, isConnected, address, verified]);
 
-  // Prefer metrics pushed from ownership auth / track responses.
   useEffect(() => {
     if (
       usageMetrics?.walletAddress &&
@@ -109,23 +108,23 @@ export default function SponsorshipDashboard() {
 
   if (loading && !metrics) {
     return (
-      <div className="flex h-full items-center justify-center p-8 text-white/50">
-        <RefreshCw className="h-6 w-6 animate-spin text-[#8F5CFF]" />
+      <div className="flex h-full items-center justify-center bg-[#F5F5F5] p-8 text-black/50">
+        <RefreshCw className="h-6 w-6 animate-spin text-[#0A0A0A]" />
       </div>
     );
   }
 
   if (!metrics || error) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
-        <Wallet className="h-8 w-8 text-[#8F5CFF]" />
+      <div className="flex h-full flex-col items-center justify-center gap-4 bg-[#F5F5F5] p-8 text-center">
+        <Wallet className="h-8 w-8 text-[#0A0A0A]" />
         <div>
-          <h1 className="text-lg font-semibold text-white">Live wallet usage</h1>
-          <p className="mt-2 max-w-sm text-sm text-white/50">
+          <h1 className="text-lg font-semibold text-black">Live wallet usage</h1>
+          <p className="mt-2 max-w-sm text-sm text-black/50">
             {error ?? "No live metrics yet for this wallet."}
           </p>
           {address && (
-            <p className="mt-2 font-mono text-xs text-white/35">
+            <p className="mt-2 font-mono text-xs text-black/40">
               {address.slice(0, 6)}…{address.slice(-4)}
             </p>
           )}
@@ -164,19 +163,19 @@ export default function SponsorshipDashboard() {
       variants={staggerContainer}
       initial="hidden"
       animate="visible"
-      className="flex h-full flex-col overflow-y-auto bg-[var(--ar-bg)] p-6 md:p-8"
+      className="flex h-full flex-col overflow-y-auto bg-[#F5F5F5] p-6 md:p-8"
     >
       <motion.header variants={fadeUpItem} className="mb-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-white">
+            <h1 className="text-2xl font-semibold tracking-tight text-black">
               Usage & Sponsorship
             </h1>
-            <p className="subheading-text mt-1 text-sm text-white/45">
-              Live counters for the connected wallet — updates every 3s.
+            <p className="subheading-text mt-1 text-sm text-black/50">
+              Live counters for the connected wallet, updates every 3s.
             </p>
             {metrics.walletAddress && (
-              <p className="mt-1 font-mono text-xs text-[#8F5CFF]">
+              <p className="mt-1 font-mono text-xs text-[#0A0A0A]">
                 {metrics.walletAddress.slice(0, 8)}…{metrics.walletAddress.slice(-6)}
                 {metrics.live ? " · live" : ""}
                 {lastFetchedAt
@@ -189,12 +188,12 @@ export default function SponsorshipDashboard() {
             <button
               type="button"
               onClick={() => void fetchMetrics(false)}
-              className="rounded-full border border-white/10 p-2 text-white/50 hover:bg-white/5 hover:text-white"
+              className="rounded-full border border-black/10 bg-white p-2 text-black/50 hover:bg-black/5 hover:text-black"
               aria-label="Refresh usage"
             >
               <RefreshCw className="h-4 w-4" />
             </button>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-[#8F5CFF]/30 bg-[#8F5CFF]/10 px-3 py-1 text-xs font-medium text-[#8F5CFF]">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-[#0A0A0A]/25 bg-[#0A0A0A]/10 px-3 py-1 text-xs font-medium text-[#0A0A0A]">
               <Shield className="h-3.5 w-3.5" />
               Tier: {metrics.userTier.replace(/_/g, " ").toUpperCase()}
             </span>
@@ -205,28 +204,28 @@ export default function SponsorshipDashboard() {
       <div className="mx-auto w-full max-w-xl space-y-6">
         <motion.div
           variants={fadeUpItem}
-          className="rounded-2xl border border-[var(--ar-border)] bg-[var(--ar-surface)] p-6 backdrop-blur-xl"
+          className="rounded-2xl border border-black/10 bg-white p-6 shadow-sm"
         >
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-white">Daily Sponsorship Allowance</h2>
-            <span className="flex items-center gap-1 text-xs text-white/45">
-              <Clock className="h-3.5 w-3.5 text-[#8F5CFF]" /> Resets in{" "}
+            <h2 className="text-sm font-semibold text-black">Daily Sponsorship Allowance</h2>
+            <span className="flex items-center gap-1 text-xs text-black/50">
+              <Clock className="h-3.5 w-3.5 text-[#0A0A0A]" /> Resets in{" "}
               {formatTimer(metrics.resetInSeconds)}
             </span>
           </div>
 
           <div className="mb-2 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-white">
+            <span className="text-2xl font-bold text-black">
               ${metrics.sponsoredUsdSpent.toFixed(2)}
             </span>
-            <span className="text-xs text-white/50">
+            <span className="text-xs text-black/50">
               / ${metrics.sponsoredUsdLimit} Sponsored
             </span>
           </div>
 
-          <div className="h-3 w-full overflow-hidden rounded-full bg-white/10 p-0.5">
+          <div className="h-3 w-full overflow-hidden rounded-full bg-black/10 p-0.5">
             <motion.div
-              className="h-full rounded-full bg-gradient-to-r from-[#153E75] via-[#7C4DFF] to-[#8F5CFF]"
+              className="h-full rounded-full bg-black"
               initial={{ width: 0 }}
               animate={{ width: `${usdPercent}%` }}
               transition={{ duration: 0.4, ease: "easeOut" }}
@@ -304,22 +303,22 @@ function QuotaCard({
     limit == null ? 0 : Math.min(100, Math.round((current / (limit || 1)) * 100));
 
   return (
-    <div className="rounded-xl border border-[var(--ar-border)] bg-[var(--ar-surface)] p-4 backdrop-blur-xl">
+    <div className="rounded-xl border border-black/10 bg-white p-4 shadow-sm">
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#8F5CFF]/30 bg-[#8F5CFF]/10 text-[#8F5CFF]">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#0A0A0A]/25 bg-[#0A0A0A]/10 text-[#0A0A0A]">
           <Icon className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-xs text-white/50">{title}</p>
-          <p className="text-sm font-semibold text-white">
+          <p className="text-xs text-black/50">{title}</p>
+          <p className="text-sm font-semibold text-black">
             {current}
-            {limit != null && <span className="text-xs text-white/40"> / {limit}</span>}
+            {limit != null && <span className="text-xs text-black/40"> / {limit}</span>}
           </p>
         </div>
       </div>
       {limit != null && (
-        <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-          <div className="h-full rounded-full bg-[#8F5CFF]" style={{ width: `${percent}%` }} />
+        <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-black/10">
+          <div className="h-full rounded-full bg-[#0A0A0A]" style={{ width: `${percent}%` }} />
         </div>
       )}
     </div>

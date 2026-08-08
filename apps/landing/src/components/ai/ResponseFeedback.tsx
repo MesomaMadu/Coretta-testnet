@@ -67,7 +67,6 @@ export default function ResponseFeedback({
     comment?: string | null;
   }) {
     if (!signedIn) {
-      // Privacy-first fallback: don't send anywhere if user isn't signed in.
       setMode("thanks");
       return;
     }
@@ -87,7 +86,7 @@ export default function ResponseFeedback({
   }
 
   return (
-    <div className="mt-1 flex items-center gap-2 text-[11px] text-white/35">
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-black/40">
       <button
         type="button"
         disabled={submitting}
@@ -95,7 +94,7 @@ export default function ResponseFeedback({
           await sendFeedback({ kind: "thumbs", rating: 1 });
           setMode("thanks");
         }}
-        className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-1 transition hover:border-cyan-400/30 hover:text-white disabled:opacity-50"
+        className="rounded-full border border-black/10 bg-white px-2 py-1 transition hover:border-[#0A0A0A]/40 hover:text-black disabled:opacity-50"
         aria-label="Thumbs up"
       >
         <span className="inline-flex items-center gap-1">
@@ -107,7 +106,7 @@ export default function ResponseFeedback({
         type="button"
         disabled={submitting}
         onClick={() => setMode((m) => (m === "negative" ? "idle" : "negative"))}
-        className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-1 transition hover:border-white/25 hover:text-white disabled:opacity-50"
+        className="rounded-full border border-black/10 bg-white px-2 py-1 transition hover:border-black/25 hover:text-black disabled:opacity-50"
         aria-label="Thumbs down"
       >
         <span className="inline-flex items-center gap-1">
@@ -119,7 +118,7 @@ export default function ResponseFeedback({
         type="button"
         disabled={submitting}
         onClick={() => setMode((m) => (m === "report" ? "idle" : "report"))}
-        className="ml-auto rounded-full border border-white/10 bg-white/[0.03] px-2 py-1 transition hover:border-rose-400/30 hover:text-white disabled:opacity-50"
+        className="ml-auto rounded-full border border-black/10 bg-white px-2 py-1 transition hover:border-rose-400/40 hover:text-black disabled:opacity-50"
       >
         <span className="inline-flex items-center gap-1">
           <Flag className="h-3.5 w-3.5" /> Report issue
@@ -132,7 +131,7 @@ export default function ResponseFeedback({
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 6 }}
-            className="ml-2 text-cyan-200/80"
+            className="ml-2 text-[#0A0A0A]"
           >
             Thanks! Damian will use this feedback to improve.
           </motion.span>
@@ -145,9 +144,9 @@ export default function ResponseFeedback({
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
-            className="mt-2 w-full rounded-2xl border border-white/10 bg-white/[0.03] p-3"
+            className="mt-2 w-full rounded-2xl border border-black/10 bg-white p-3 shadow-sm"
           >
-            <p className="mb-2 text-xs text-white/60">What went wrong?</p>
+            <p className="mb-2 text-xs text-black/60">What went wrong?</p>
             <div className="flex flex-wrap gap-2">
               {NEGATIVE_OPTIONS.map((o) => (
                 <button
@@ -156,8 +155,8 @@ export default function ResponseFeedback({
                   onClick={() => setReason(o.id)}
                   className={`rounded-full border px-3 py-1 text-[11px] transition ${
                     reason === o.id
-                      ? "border-cyan-400/40 bg-cyan-500/10 text-white"
-                      : "border-white/10 bg-white/[0.03] text-white/60 hover:border-white/20 hover:text-white/80"
+                      ? "border-[#0A0A0A]/40 bg-[#0A0A0A]/10 text-black"
+                      : "border-black/10 bg-[#F5F5F5] text-black/60 hover:border-black/20 hover:text-black/80"
                   }`}
                 >
                   {o.label}
@@ -168,7 +167,7 @@ export default function ResponseFeedback({
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder="Optional details…"
-              className="mt-3 w-full resize-none rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-white/80 outline-none focus:border-cyan-400/30"
+              className="mt-3 w-full resize-none rounded-xl border border-black/10 bg-[#F5F5F5] px-3 py-2 text-xs text-black/80 outline-none focus:border-[#0A0A0A]/40"
               rows={3}
             />
             <div className="mt-3 flex justify-end gap-2">
@@ -179,7 +178,7 @@ export default function ResponseFeedback({
                   setText("");
                   setReason(null);
                 }}
-                className="rounded-full px-3 py-1 text-[11px] text-white/45 hover:text-white/70"
+                className="rounded-full px-3 py-1 text-[11px] text-black/45 hover:text-black/70"
               >
                 Cancel
               </button>
@@ -197,7 +196,7 @@ export default function ResponseFeedback({
                   setText("");
                   setReason(null);
                 }}
-                className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-[11px] text-white/80 hover:border-cyan-400/30 disabled:opacity-50"
+                className="rounded-full border border-black/10 bg-black px-3 py-1 text-[11px] text-white hover:bg-gray-800 disabled:opacity-50"
               >
                 Submit
               </button>
@@ -210,16 +209,16 @@ export default function ResponseFeedback({
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
-            className="mt-2 w-full rounded-2xl border border-rose-500/20 bg-rose-500/10 p-3"
+            className="mt-2 w-full rounded-2xl border border-rose-500/25 bg-rose-50 p-3"
           >
-            <p className="mb-2 text-xs text-rose-100/80">
+            <p className="mb-2 text-xs text-rose-900/80">
               Report suspicious or confusing behavior.
             </p>
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder="Describe the issue… (no secrets)"
-              className="w-full resize-none rounded-xl border border-rose-500/20 bg-black/20 px-3 py-2 text-xs text-white/80 outline-none focus:border-rose-400/40"
+              className="w-full resize-none rounded-xl border border-rose-500/20 bg-white px-3 py-2 text-xs text-black/80 outline-none focus:border-rose-400/40"
               rows={3}
             />
             <div className="mt-3 flex justify-end gap-2">
@@ -229,7 +228,7 @@ export default function ResponseFeedback({
                   setMode("idle");
                   setText("");
                 }}
-                className="rounded-full px-3 py-1 text-[11px] text-rose-50/70 hover:text-white"
+                className="rounded-full px-3 py-1 text-[11px] text-rose-800/70 hover:text-rose-900"
               >
                 Cancel
               </button>
@@ -245,7 +244,7 @@ export default function ResponseFeedback({
                   setMode("thanks");
                   setText("");
                 }}
-                className="rounded-full border border-rose-500/30 bg-rose-500/20 px-3 py-1 text-[11px] text-rose-50 hover:border-rose-400/50 disabled:opacity-50"
+                className="rounded-full border border-rose-500/30 bg-rose-600 px-3 py-1 text-[11px] text-white hover:bg-rose-700 disabled:opacity-50"
               >
                 Send report
               </button>
@@ -256,4 +255,3 @@ export default function ResponseFeedback({
     </div>
   );
 }
-

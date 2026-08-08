@@ -29,7 +29,7 @@ export function useAgentChat(greeting?: string) {
     msg(
       "assistant",
       greeting ??
-        `I'm ${AGENT_NAME} — ${AGENT_TAGLINE}. Tell me who to pay and how much. I'll prepare a preview for you to confirm and sign. I never send funds without your approval.`,
+        `I'm ${AGENT_NAME}, ${AGENT_TAGLINE}. Tell me who to pay and how much. I'll prepare a preview for you to confirm and sign. I never send funds without your approval.`,
     ),
   ]);
   const [phase, setPhase] = useState<AgentPhase>("idle");
@@ -167,7 +167,7 @@ export function useAgentChat(greeting?: string) {
                   "",
                   smartAddr,
                   "",
-                  "This is the full on-chain address created for your account. Copy it carefully — do not share your seed phrase or private key.",
+                  "This is the full on-chain address created for your account. Copy it carefully, and do not share your seed phrase or private key.",
                 ]
               : [
                   "Your smart wallet is not provisioned yet.",
@@ -315,7 +315,7 @@ export function useAgentChat(greeting?: string) {
           "",
           usage.walletAddress
             ? `Wallet: ${usage.walletAddress}`
-            : "Wallet: (account-level — connect a wallet for per-address tracking)",
+            : "Wallet: (account-level; connect a wallet for per-address tracking)",
           `Live: ${usage.live ? "yes" : "no"}`,
           `User Tier: ${usage.userTier.toUpperCase()}`,
           `Sponsored USD: $${usage.sponsoredUsdSpent.toFixed(2)} / $${usage.sponsoredUsdLimit} (Remaining: $${remainingUsd.toFixed(2)})`,
@@ -373,7 +373,7 @@ export function useAgentChat(greeting?: string) {
           lastRecipient ? `• ${lastRecipient.summary}` : undefined,
           preferredAsset ? `• ${preferredAsset.summary}` : undefined,
           "",
-          "Say: “Yes — send 50 USDC to the same recipient” or tell me the exact recipient/asset.",
+          "Say: “Yes, send 50 USDC to the same recipient” or tell me the exact recipient/asset.",
         ]
           .filter(Boolean)
           .join("\n");
