@@ -4,7 +4,7 @@ import type { Hex } from "viem";
 const ALGO = "aes-256-gcm";
 
 function keyFromSecret(secret: string): Buffer {
-  return scryptSync(secret, "arcremit-salt", 32);
+  return scryptSync(secret, "coretta-salt", 32);
 }
 
 export function encryptPrivateKey(hexKey: Hex, secret: string): string {

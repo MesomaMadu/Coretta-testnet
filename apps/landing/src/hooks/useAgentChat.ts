@@ -302,7 +302,7 @@ export function useAgentChat(greeting?: string) {
         const usagePath = address
           ? `/v1/user/usage?walletAddress=${encodeURIComponent(address)}`
           : "/v1/user/usage";
-        const usage = await apiFetch<import("@arcremit/shared").UserUsageMetrics>(usagePath);
+        const usage = await apiFetch<import("@coretta/shared").UserUsageMetrics>(usagePath);
         const remainingTx = Math.max(0, usage.sponsoredTxLimit - usage.sponsoredTxCount);
         const remainingUsd = Math.max(0, usage.sponsoredUsdLimit - usage.sponsoredUsdSpent);
         const remainingAi = Math.max(0, usage.aiRequestLimit - usage.aiRequestCount);

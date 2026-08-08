@@ -4,7 +4,7 @@ import { config } from "../config.js";
 import { log } from "../lib/log.js";
 import { trackUsageEvent } from "./limits.js";
 import { createAuditEvent } from "./audit.js";
-import { ARC_EXPLORER } from "@arcremit/shared";
+import { ARC_EXPLORER } from "@coretta/shared";
 
 export type SwapToken = "USDC" | "EURC" | "NATIVE" | "USDT";
 

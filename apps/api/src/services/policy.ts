@@ -3,7 +3,7 @@ import {
   DEFAULT_DAILY_SEND_LIMIT_MICRO,
   DEFAULT_DAILY_TX_LIMIT,
   parseUsdcToMicro,
-} from "@arcremit/shared";
+} from "@coretta/shared";
 import type { UserLimit } from "@prisma/client";
 
 export interface PolicyInput {

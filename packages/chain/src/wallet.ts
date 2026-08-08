@@ -43,7 +43,7 @@ export async function getUsdcBalanceMicro(
   client: PublicClient,
   address: Address,
 ): Promise<bigint> {
-  const { USDC_ADDRESS } = await import("@arcremit/shared");
+  const { USDC_ADDRESS } = await import("@coretta/shared");
   const { erc20Abi } = await import("viem");
   const balance = await client.readContract({
     address: USDC_ADDRESS as Address,

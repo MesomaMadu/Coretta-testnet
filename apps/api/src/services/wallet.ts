@@ -1,9 +1,9 @@
-import { prisma } from "@arcremit/db";
+import { prisma } from "@coretta/db";
 import {
   createSmartAccountFromOwnerKey,
   createArcPublicClient,
   getUsdcBalanceMicro,
-} from "@arcremit/chain";
+} from "@coretta/chain";
 import { generatePrivateKey } from "viem/accounts";
 import type { Hex } from "viem";
 import { encryptPrivateKey } from "../lib/crypto.js";
@@ -13,7 +13,7 @@ import {
   normalizePhone,
   normalizeWalletAddress,
   type IdentityType,
-} from "@arcremit/shared";
+} from "@coretta/shared";
 
 const client = createArcPublicClient();
 

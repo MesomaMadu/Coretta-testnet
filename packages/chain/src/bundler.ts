@@ -9,7 +9,7 @@ import {
   type Address,
   type PublicClient,
 } from "viem";
-import { ARC_TESTNET_CHAIN_ID } from "@arcremit/shared";
+import { ARC_TESTNET_CHAIN_ID } from "@coretta/shared";
 import { arcTestnet, ARC_MIN_MAX_FEE_PER_GAS } from "./arc.js";
 import { createCirclePaymaster } from "./paymaster.js";
 
@@ -34,7 +34,7 @@ export function createArcBundlerClient({
   account: SmartAccount;
   client: PublicClient;
   rpcUrl?: string;
-}) {
+}): ReturnType<typeof createBundlerClient> {
   const paymaster = createCirclePaymaster({ client, account });
   const resolvedBundlerUrl = bundlerRpcUrl ?? getBundlerRpcUrl();
   const bundlerTransport = http(resolvedBundlerUrl);
@@ -96,7 +96,7 @@ export async function sendUsdcTransferUserOp({
   const bundlerClient = createArcBundlerClient({ account, client });
   const { erc20Abi } = await import("viem");
   const usdc = {
-    address: (await import("@arcremit/shared")).USDC_ADDRESS as Address,
+    address: (await import("@coretta/shared")).USDC_ADDRESS as Address,
     abi: erc20Abi,
   };
 

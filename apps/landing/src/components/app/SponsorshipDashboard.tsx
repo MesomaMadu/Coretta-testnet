@@ -16,7 +16,7 @@ import {
   Link2,
 } from "lucide-react";
 import { apiFetch, getApiToken } from "@/lib/api";
-import type { UserUsageMetrics } from "@arcremit/shared";
+import type { UserUsageMetrics } from "@coretta/shared";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
 import { useWalletSession } from "@/hooks/useWalletSession";
 import { Button } from "@/components/ui/button";

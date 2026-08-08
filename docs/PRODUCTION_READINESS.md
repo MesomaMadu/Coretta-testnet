@@ -84,10 +84,10 @@ Do **not** put Circle/Kit/session secrets in `NEXT_PUBLIC_*`.
 
 ```bash
 npm install
-npm run build -w @arcremit/shared
-npm run build -w @arcremit/chain
-npm run build -w @arcremit/db
-npm run build -w @arcremit/api
+npm run build -w @coretta/shared
+npm run build -w @coretta/chain
+npm run build -w @coretta/db
+npm run build -w @coretta/api
 npm run build --prefix apps/landing
 npm run lint
 npm run db:generate

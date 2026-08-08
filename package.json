@@ -1,5 +1,5 @@
 {
-  "name": "arcremit",
+  "name": "coretta",
   "private": true,
   "workspaces": [
     "packages/*",
@@ -7,16 +7,16 @@
     "apps/web"
   ],
   "scripts": {
-    "build": "npm run build -w @arcremit/shared && npm run build -w @arcremit/chain && npm run build -w @arcremit/db && npm run build -w @arcremit/api && npm run build -w @arcremit/web && npm run build:landing",
+    "build": "npm run build -w @coretta/shared && npm run build -w @coretta/chain && npm run build -w @coretta/db && npm run build -w @coretta/api && npm run build -w @coretta/web && npm run build:landing",
     "build:landing": "npm install --prefix apps/landing --no-audit --no-fund --legacy-peer-deps && npm run build --prefix apps/landing",
-    "lint": "npm run build -w @arcremit/shared && npm run build -w @arcremit/chain && npm run build -w @arcremit/db && npm run build -w @arcremit/api && npm run build -w @arcremit/web",
-    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @arcremit/api\" \"npm run dev -w @arcremit/web\"",
+    "lint": "npm run build -w @coretta/shared && npm run build -w @coretta/chain && npm run build -w @coretta/db && npm run build -w @coretta/api && npm run build -w @coretta/web",
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @coretta/api\" \"npm run dev -w @coretta/web\"",
     "dev:landing": "npm run dev --prefix apps/landing",
-    "dev:api": "npm run dev -w @arcremit/api",
-    "dev:web": "npm run dev -w @arcremit/web",
-    "db:generate": "npm run generate -w @arcremit/db",
-    "db:push": "npm run push -w @arcremit/db",
-    "db:studio": "npm run studio -w @arcremit/db"
+    "dev:api": "npm run dev -w @coretta/api",
+    "dev:web": "npm run dev -w @coretta/web",
+    "db:generate": "npm run generate -w @coretta/db",
+    "db:push": "npm run push -w @coretta/db",
+    "db:studio": "npm run studio -w @coretta/db"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

@@ -1,5 +1,5 @@
 {
-  "name": "@arcremit/api",
+  "name": "@coretta/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,9 +9,9 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@arcremit/chain": "*",
-    "@arcremit/db": "*",
-    "@arcremit/shared": "*",
+    "@coretta/chain": "*",
+    "@coretta/db": "*",
+    "@coretta/shared": "*",
     "@circle-fin/adapter-circle-wallets": "^1.4.3",
     "@circle-fin/adapter-viem-v2": "^1.14.0",
     "@circle-fin/app-kit": "^1.10.0",

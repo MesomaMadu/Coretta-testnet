@@ -1,4 +1,4 @@
-import { prisma } from "@arcremit/db";
+import { prisma } from "@coretta/db";
 import { config } from "../config.js";
 import { encryptText, hashAiActor } from "../lib/crypto.js";
 

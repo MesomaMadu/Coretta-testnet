@@ -1,10 +1,10 @@
-import { prisma } from "@arcremit/db";
+import { prisma } from "@coretta/db";
 import {
   sendUsdcTransferUserOp,
   createSmartAccountFromOwnerKey,
   createArcPublicClient,
-} from "@arcremit/chain";
-import { formatMicroToUsdc } from "@arcremit/shared";
+} from "@coretta/chain";
+import { formatMicroToUsdc } from "@coretta/shared";
 import type { Address } from "viem";
 import { evaluateTransferPolicy, shouldResetDailyLimits } from "./policy.js";
 import {

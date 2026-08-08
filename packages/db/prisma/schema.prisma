@@ -6,7 +6,7 @@ generator client {
 // Production: set provider = "postgresql" and DATABASE_URL to a Postgres URL,
 // then run: npm run db:generate && npm run db:push  (or prisma migrate deploy when migrations exist)
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

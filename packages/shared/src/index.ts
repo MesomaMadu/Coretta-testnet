@@ -20,7 +20,7 @@ export const PAYMASTER_V08_ADDRESS =
 
 export const USDC_DECIMALS = 6;
 
-/** ArcRemit policy: max remittance per transfer (micro-USDC, 6 decimals) */
+/** Coretta policy: max remittance per transfer (micro-USDC, 6 decimals) */
 export const MAX_TRANSFER_MICRO = 100_000_000n; // $100.00
 
 export const DEFAULT_DAILY_SEND_LIMIT_MICRO = 500_000_000n; // $500/day

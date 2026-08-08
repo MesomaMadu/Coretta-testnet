@@ -1,5 +1,5 @@
 import { verifyMessage, type Hex } from "viem";
-import { normalizeWalletAddress } from "@arcremit/shared";
+import { normalizeWalletAddress } from "@coretta/shared";
 import { loginWithIdentity } from "./auth.js";
 import { trackUsageEvent } from "./limits.js";
 import { createAuditEvent } from "./audit.js";

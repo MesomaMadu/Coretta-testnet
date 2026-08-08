@@ -1,4 +1,4 @@
-# ArcRemit
+# Coretta
 
 Gasless-style USDC micro-remittance on **Arc Testnet** using **ERC-4337** Safe smart accounts, **Circle Paymaster** (USDC gas), and a **Pimlico-compatible** bundler.
 
@@ -37,7 +37,7 @@ npm run db:generate
 npm run db:push
 
 # Verify Arc RPC + bundler (optional)
-npm run verify -w @arcremit/chain
+npm run verify -w @coretta/chain
 
 # Run API + web
 npm run dev

@@ -1,7 +1,7 @@
 import { encodePacked, type Address } from "viem";
 import type { PublicClient } from "viem";
 import type { SmartAccount } from "viem/account-abstraction";
-import { PAYMASTER_V07_ADDRESS, USDC_ADDRESS } from "@arcremit/shared";
+import { PAYMASTER_V07_ADDRESS, USDC_ADDRESS } from "@coretta/shared";
 import { signPermit } from "./permit.js";
 
 const DEFAULT_PERMIT_AMOUNT = 10_000_000n; // 10 USDC allowance headroom for fees

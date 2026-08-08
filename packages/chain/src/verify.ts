@@ -1,9 +1,9 @@
 /**
  * Smoke-check Arc Testnet + bundler connectivity.
- * Run: npm run verify -w @arcremit/chain
+ * Run: npm run verify -w @coretta/chain
  */
 import { erc20Abi } from "viem";
-import { ARC_TESTNET_CHAIN_ID, USDC_ADDRESS } from "@arcremit/shared";
+import { ARC_TESTNET_CHAIN_ID, USDC_ADDRESS } from "@coretta/shared";
 import { createArcPublicClient, getBundlerRpcUrl } from "./bundler.js";
 
 async function main() {

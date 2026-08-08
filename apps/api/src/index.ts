@@ -44,7 +44,7 @@ app.listen({ port: config.port, host: "0.0.0.0" }, (err, addr) => {
     log.error("api", "Failed to start server", { message: err.message });
     process.exit(1);
   }
-  log.info("api", `ArcRemit API listening at ${addr}`, {
+  log.info("api", `Coretta API listening at ${addr}`, {
     devMode: config.devMode,
     hasKitKey: Boolean(config.kitKey),
     hasCircle: Boolean(config.circleApiKey),

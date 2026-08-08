@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { prisma } from "@arcremit/db";
+import { prisma } from "@coretta/db";
 import {
   getOrCreateActorForUser,
   getPreferences,

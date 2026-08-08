@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { prisma } from "@arcremit/db";
-import { formatMicroToUsdc, ARC_EXPLORER } from "@arcremit/shared";
+import { prisma } from "@coretta/db";
+import { formatMicroToUsdc, ARC_EXPLORER } from "@coretta/shared";
 import { resolveSession } from "../services/auth.js";
 import { createRemittance, executeRemittance } from "../services/orchestrator.js";
 import {
@@ -40,10 +40,10 @@ import {
 } from "../services/limits.js";
 import { determineOptimalRoute } from "../services/router.js";
 import { authenticateWalletOwnership } from "../services/wallet-auth.js";
-import { normalizeWalletAddress } from "@arcremit/shared";
+import { normalizeWalletAddress } from "@coretta/shared";
 
 export async function registerRoutes(app: FastifyInstance) {
-  app.get("/health", async () => ({ ok: true, service: "arcremit-api" }));
+  app.get("/health", async () => ({ ok: true, service: "coretta-api" }));
 
   /** Email auth temporarily disabled — wallet-only. */
   app.get("/v1/auth/email-status", async (_req, reply) => {
@@ -584,7 +584,7 @@ export async function registerRoutes(app: FastifyInstance) {
   });
 
   // ==========================
-  // ArcRemit AI (feedback/memory)
+  // Coretta AI (feedback/memory)
   // ==========================
 
   app.get("/v1/ai/bootstrap", async (req) => {

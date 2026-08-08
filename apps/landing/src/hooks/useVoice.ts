@@ -52,7 +52,7 @@ export function useVoice({ onTranscript }: UseVoiceOptions) {
           typeof window !== "undefined"
             ? sessionStorage.getItem("coretta_wallet_verified_address")
             : null;
-        void apiFetch<{ ok: boolean; metrics?: import("@arcremit/shared").UserUsageMetrics }>(
+        void apiFetch<{ ok: boolean; metrics?: import("@coretta/shared").UserUsageMetrics }>(
           "/v1/usage/track",
           {
             method: "POST",

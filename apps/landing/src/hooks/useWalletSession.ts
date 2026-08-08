@@ -15,7 +15,7 @@ import {
   setSmartWalletActive,
   setWalletVerified,
 } from "@/lib/wallet-session";
-import type { UserUsageMetrics } from "@arcremit/shared";
+import type { UserUsageMetrics } from "@coretta/shared";
 
 /** Shared across hook instances so only one ownership prompt fires per connect. */
 let ownershipVerifyInFlight: Promise<boolean> | null = null;

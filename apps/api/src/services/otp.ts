@@ -1,5 +1,5 @@
 import { createHash, randomInt } from "node:crypto";
-import { prisma } from "@arcremit/db";
+import { prisma } from "@coretta/db";
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 30 * 1000;

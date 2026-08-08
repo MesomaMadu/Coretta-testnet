@@ -1,4 +1,4 @@
-import { prisma } from "@arcremit/db";
+import { prisma } from "@coretta/db";
 
 export interface RiskAssessment {
   score: number;

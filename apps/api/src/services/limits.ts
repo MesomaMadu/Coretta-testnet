@@ -1,10 +1,10 @@
-import { prisma } from "@arcremit/db";
+import { prisma } from "@coretta/db";
 import {
   normalizeWalletAddress,
   type UserTier,
   type TierLimits,
   type UserUsageMetrics,
-} from "@arcremit/shared";
+} from "@coretta/shared";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

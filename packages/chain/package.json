@@ -1,5 +1,5 @@
 {
-  "name": "@arcremit/chain",
+  "name": "@coretta/chain",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -17,7 +17,7 @@
     "verify": "tsx src/verify.ts"
   },
   "dependencies": {
-    "@arcremit/shared": "*",
+    "@coretta/shared": "*",
     "permissionless": "^0.2.57",
     "viem": "^2.23.12"
   },

@@ -3,7 +3,7 @@ import {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_RPC,
   ARC_EXPLORER,
-} from "@arcremit/shared";
+} from "@coretta/shared";
 
 export const arcTestnet = defineChain({
   id: ARC_TESTNET_CHAIN_ID,

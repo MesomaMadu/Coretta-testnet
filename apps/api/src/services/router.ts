@@ -1,5 +1,5 @@
-import { listSupportedNetworks } from "@arcremit/chain";
-import type { RouteEstimate } from "@arcremit/shared";
+import { listSupportedNetworks } from "@coretta/chain";
+import type { RouteEstimate } from "@coretta/shared";
 import { evaluateUserRisk } from "./risk.js";
 import { getUserUsageMetrics } from "./limits.js";
 

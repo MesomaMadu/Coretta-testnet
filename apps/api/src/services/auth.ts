@@ -1,8 +1,8 @@
-import { prisma } from "@arcremit/db";
+import { prisma } from "@coretta/db";
 import { randomBytes } from "node:crypto";
 import { hashSessionToken } from "../lib/crypto.js";
 import { provisionUserWithWallet } from "./wallet.js";
-import type { IdentityType } from "@arcremit/shared";
+import type { IdentityType } from "@coretta/shared";
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 

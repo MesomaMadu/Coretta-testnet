@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "./api";
 
-const TOKEN_KEY = "arcremit_token";
+const TOKEN_KEY = "coretta_token";
 
 type Screen = "login" | "home" | "send" | "history";
 
@@ -103,7 +103,7 @@ export default function App() {
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-cyan-400/20 text-2xl font-bold text-cyan-300">
             A
           </div>
-          <h1 className="text-3xl font-bold tracking-tight">ArcRemit</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Coretta</h1>
           <p className="mt-2 text-slate-400">
             Instant USDC remittance on Arc Testnet — no gas tokens needed.
           </p>

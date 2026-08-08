@@ -1,4 +1,4 @@
-import type { NetworkMetadata, RouteEstimate } from "@arcremit/shared";
+import type { NetworkMetadata, RouteEstimate } from "@coretta/shared";
 
 export const SUPPORTED_NETWORKS: Record<string, NetworkMetadata> = {
   arc_testnet: {
