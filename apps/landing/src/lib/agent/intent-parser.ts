@@ -20,15 +20,21 @@ function parseRecipient(text: string): string | null {
   ) {
     return "__BOUND_MAIN_WALLET__";
   }
-  // Prefer full EVM addresses over names/emails
-  const evm = text.match(/0x[a-fA-F0-9]{40}/);
+  // Prefer full EVM addresses (never treat 0x… as a name)
+  const evm = text.match(/0x[a-fA-F0-9]{40}/i);
   if (evm) return evm[0];
   const email = text.match(/[\w.+-]+@[\w.-]+\.\w+/);
   if (email) return email[0];
+  // Names only: letters first, no 0x prefix
   const toMatch = text.match(
-    /(?:to|for)\s+([A-Za-z][A-Za-z0-9\s]{0,40}?)(?:\s|$|\.|,)/i,
+    /(?:to|for)\s+([A-Za-z][A-Za-z0-9\s.'-]{0,40}?)(?:\s|$|\.|,)/i,
   );
-  if (toMatch) return toMatch[1].trim();
+  if (toMatch) {
+    const name = toMatch[1].trim();
+    // Guard: never accept a partial/broken hex as a name
+    if (/^0x/i.test(name) || /\b0x[a-fA-F0-9]/i.test(name)) return null;
+    return name;
+  }
   return null;
 }
 
@@ -130,8 +136,6 @@ export function parseUserIntent(input: string): ParseResult {
         sponsorship: "Circle Paymaster, gas sponsored in USDC",
         network: "Arc Testnet",
         executionPath: "App Kit swap on Arc_Testnet",
-        riskWarning:
-          "Requires KIT_KEY + Circle wallet credentials on the server, and a funded wallet holding the source token.",
       },
     };
   }
@@ -140,22 +144,30 @@ export function parseUserIntent(input: string): ParseResult {
   const multi = parseMultiSend(text, defaultAsset);
   if (multi && multi.recipients.length >= 2) {
     const action: AllowedAction = multi.asset === "USDC" ? "sendUSDC" : "sendEURC";
-    const summary = multi.recipients.map((r) => r.name).join(", ");
+    const n = multi.recipients.length;
+    const summary = multi.recipients
+      .map((r) => {
+        if (r.identityType === "address") {
+          return `${r.amount} ${multi.asset} → ${r.name.slice(0, 6)}…${r.name.slice(-4)}`;
+        }
+        return `${r.amount} ${multi.asset} → ${r.name}`;
+      })
+      .join("; ");
     const riskWarning = assessBatchRisk(multi.recipients, multi.total);
     return {
       ok: true,
       preview: {
         action,
-        recipient: `${multi.recipients.length} recipients`,
+        recipient: `${n} wallet${n === 1 ? "" : "s"}`,
         amount: multi.total,
         asset: multi.asset,
         batch: multi.recipients,
         totalAmount: multi.total,
-        recipientCount: multi.recipients.length,
+        recipientCount: n,
         riskWarning,
         sponsorship: "Circle Paymaster, gas sponsored in USDC",
         network: "Arc Testnet",
-        executionPath: `Batch UserOp → ${multi.recipients.length} transfers (single signature) · ${summary}`,
+        executionPath: `Batch → ${n} wallets · ${summary}`,
       },
     };
   }
@@ -166,7 +178,16 @@ export function parseUserIntent(input: string): ParseResult {
   if (sendMatch) {
     const amount = parseAmount(sendMatch[1]);
     let asset = (sendMatch[2]?.toUpperCase() as AssetSymbol) || detectAsset(text);
-    const recipient = sendMatch[3]?.trim().replace(/[.!?]$/, "") || parseRecipient(text);
+    const tail = sendMatch[3]?.trim().replace(/[.!?]$/, "") ?? "";
+    // Prefer a full address/email in the tail; do not treat hex as a name.
+    const evmInTail = tail.match(/0x[a-fA-F0-9]{40}/i);
+    const emailInTail = tail.match(/[\w.+-]+@[\w.-]+\.\w+/);
+    const recipient =
+      (evmInTail ? evmInTail[0] : null) ||
+      (emailInTail ? emailInTail[0] : null) ||
+      parseRecipient(text) ||
+      // Only fall back to free-text tail if it is clearly a name (no 0x)
+      (!/^0x/i.test(tail) && !tail.includes("0x") ? tail : null);
     if (!amount) {
       return { ok: false, reason: "ambiguous", message: "What amount should I send? (Max $100.)" };
     }
@@ -178,7 +199,12 @@ export function parseUserIntent(input: string): ParseResult {
       };
     }
     if (!recipient) {
-      return { ok: false, reason: "ambiguous", message: "Who is the recipient? Use a name or email." };
+      return {
+        ok: false,
+        reason: "ambiguous",
+        message:
+          "Who is the recipient? Use a full EVM address (0x…), email, or name.",
+      };
     }
     const action: AllowedAction = asset === "USDC" ? "sendUSDC" : "sendEURC";
     return {

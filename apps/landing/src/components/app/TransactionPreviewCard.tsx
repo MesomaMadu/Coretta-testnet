@@ -62,22 +62,41 @@ export default function TransactionPreviewCard({
         {preview.batch && preview.batch.length > 1 ? (
           <>
             <Row
-              label="Recipients"
+              label="Wallets"
               value={`${preview.recipientCount ?? preview.batch.length}`}
             />
-            <Row label="Total" value={`${preview.totalAmount ?? preview.amount} ${preview.asset}`} />
-            <div className="max-h-40 space-y-2 overflow-y-auto rounded-lg border border-black/10 bg-[#F5F5F5] p-2">
-              {preview.batch.map((r) => (
+            <Row
+              label="Total"
+              value={`${preview.totalAmount ?? preview.amount} ${preview.asset}`}
+            />
+            <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border border-black/10 bg-[#F5F5F5] p-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-black/40">
+                Amount per wallet
+              </p>
+              {preview.batch.map((r, i) => (
                 <div
-                  key={`${r.name}-${r.amount}`}
-                  className="flex justify-between gap-2 border-b border-black/5 pb-2 text-xs last:border-0 last:pb-0"
+                  key={`${r.name}-${r.amount}-${i}`}
+                  className="flex flex-col gap-0.5 border-b border-black/5 pb-2 text-xs last:border-0 last:pb-0"
                 >
-                  <span className="text-black/70">
-                    {r.name}{" "}
-                    <span className="text-black/40">({r.identityType})</span>
-                  </span>
-                  <span className="font-medium text-black">
-                    {r.amount} {preview.asset}
+                  <div className="flex justify-between gap-2">
+                    <span className="font-medium text-black">
+                      Wallet {i + 1}
+                      <span className="ml-1 font-normal text-black/40">
+                        ({r.identityType})
+                      </span>
+                    </span>
+                    <span className="shrink-0 font-semibold text-black">
+                      {r.amount} {preview.asset}
+                    </span>
+                  </div>
+                  <span
+                    className={
+                      r.identityType === "address"
+                        ? "break-all font-mono text-[10px] text-black/60"
+                        : "break-all text-[11px] text-black/70"
+                    }
+                  >
+                    {r.name}
                   </span>
                 </div>
               ))}
@@ -97,8 +116,6 @@ export default function TransactionPreviewCard({
         )}
         {preview.swapRoute && <Row label="Route" value={preview.swapRoute} />}
         <Row label="Network" value={preview.network} />
-        <Row label="Gas" value={preview.sponsorship} />
-        <Row label="Path" value={preview.executionPath} />
       </dl>
 
       <p className="mt-3 break-all font-mono text-[10px] text-black/40">

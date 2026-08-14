@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import AppSidebar from "./AppSidebar";
 import AIAgentPanel from "./AIAgentPanel";
@@ -13,6 +13,7 @@ import PageTransition from "./PageTransition";
 import WalletTutorial from "./WalletTutorial";
 import { useProfile } from "@/hooks/useProfile";
 import { useWalletSession } from "@/hooks/useWalletSession";
+import { useWalletTracking } from "@/hooks/useWalletTracking";
 
 type AppView = "chat" | "settings" | "history" | "usage";
 
@@ -24,9 +25,11 @@ export default function AppShell() {
   const [walletOpen, setWalletOpen] = useState(false);
   const [view, setView] = useState<AppView>("chat");
   const [tutorialOpen, setTutorialOpen] = useState(false);
-  const { address, isConnected } = useAccount();
+  const { address, status } = useAccount();
+  const isConnected = status === "connected";
   const { profile, hydrated, skipWalletTutorial } = useProfile();
   const { verified } = useWalletSession();
+  const { track } = useWalletTracking();
   const [onboardingOpen, setOnboardingOpen] = useState(false);
 
   useEffect(() => {
@@ -35,13 +38,8 @@ export default function AppShell() {
     setOnboardingOpen(needsOnboarding);
   }, [hydrated, isConnected, profile.onboardingComplete]);
 
-  const wasConnected = useRef(false);
-  useEffect(() => {
-    if (wasConnected.current && !isConnected) {
-      window.dispatchEvent(new Event("coretta-wallet-disconnect"));
-    }
-    wasConnected.current = isConnected;
-  }, [isConnected]);
+  // Disconnect UI reset is owned by useWalletSession (debounced) via coretta-wallet-disconnect.
+  // Do not fire that event here on status flicker — it was clearing the agent mid-reconnect.
 
   useEffect(() => {
     if (!hydrated || onboardingOpen) return;
@@ -49,6 +47,22 @@ export default function AppShell() {
       setTutorialOpen(true);
     }
   }, [hydrated, isConnected, verified, profile.walletTutorialComplete, onboardingOpen]);
+
+  // Track in-app navigation only when wallet ownership is verified.
+  useEffect(() => {
+    if (!verified || !address) return;
+    const labels: Record<AppView, string> = {
+      chat: "Opened chat",
+      settings: "Opened settings",
+      history: "Opened activity history",
+      usage: "Opened usage dashboard",
+    };
+    void track({
+      kind: "navigation",
+      label: labels[view],
+      metadata: { view },
+    });
+  }, [view, verified, address, track]);
 
   return (
     <div className="app-shell relative flex h-dvh overflow-hidden bg-[#F5F5F5] text-black">

@@ -15,7 +15,7 @@ import {
   PenLine,
   Link2,
 } from "lucide-react";
-import { apiFetch, getApiToken } from "@/lib/api";
+import { getApiToken } from "@/lib/api";
 import type { UserUsageMetrics } from "@coretta/shared";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
 import { useWalletSession } from "@/hooks/useWalletSession";
@@ -23,12 +23,25 @@ import { Button } from "@/components/ui/button";
 
 export default function SponsorshipDashboard() {
   const { address, isConnected } = useAccount();
-  const { verified, verifying, verifyOwnership, usageMetrics } = useWalletSession();
+  const {
+    verified,
+    verifying,
+    verifyOwnership,
+    usageMetrics,
+    refreshUsage,
+    verifyError,
+  } = useWalletSession();
   const [metrics, setMetrics] = useState<UserUsageMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
 
+  /**
+   * Single refresh path — do NOT poll here.
+   * useWalletSession already polls usage while verified; chatbot settle
+   * also calls refreshUsage immediately. A second 3s poll doubled load and
+   * made counters look stale when Supabase latency piled up requests.
+   */
   const fetchMetrics = useCallback(
     async (showLoading = false) => {
       if (showLoading) setLoading(true);
@@ -49,36 +62,35 @@ export default function SponsorshipDashboard() {
       }
 
       try {
-        const data = await apiFetch<UserUsageMetrics>(
-          `/v1/user/usage?walletAddress=${encodeURIComponent(address)}`,
-        );
-        setMetrics(data);
-        setLastFetchedAt(Date.now());
-        window.dispatchEvent(
-          new CustomEvent("coretta-usage-updated", { detail: data }),
-        );
+        const data = await refreshUsage(address);
+        if (data) {
+          setMetrics(data);
+          setLastFetchedAt(Date.now());
+          setError(null);
+        } else if (showLoading) {
+          setError("Failed to load live usage for this wallet.");
+        }
       } catch (err) {
-        setMetrics(null);
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to load live usage for this wallet.",
-        );
+        if (showLoading) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Failed to load live usage for this wallet.",
+          );
+        }
       } finally {
-        if (showLoading) setLoading(false);
-        else setLoading(false);
+        setLoading(false);
       }
     },
-    [address, isConnected, verified],
+    [address, isConnected, verified, refreshUsage],
   );
 
   useEffect(() => {
     void fetchMetrics(true);
-    if (!isConnected || !address || !verified) return;
-    const interval = window.setInterval(() => void fetchMetrics(false), 3000);
-    return () => window.clearInterval(interval);
-  }, [fetchMetrics, isConnected, address, verified]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount / wallet change only
+  }, [isConnected, address, verified]);
 
+  // Prefer live metrics from the shared session hook (poll + settle refresh).
   useEffect(() => {
     if (
       usageMetrics?.walletAddress &&
@@ -130,13 +142,18 @@ export default function SponsorshipDashboard() {
           )}
         </div>
         {isConnected && !verified && (
-          <Button
-            variant="primary"
-            disabled={verifying}
-            onClick={() => void verifyOwnership()}
-          >
-            {verifying ? "Waiting for signature…" : "Sign to enable live tracking"}
-          </Button>
+          <div className="flex flex-col items-center gap-2">
+            {verifyError && (
+              <p className="max-w-sm text-xs text-amber-800">{verifyError}</p>
+            )}
+            <Button
+              variant="primary"
+              disabled={verifying}
+              onClick={() => void verifyOwnership()}
+            >
+              {verifying ? "Waiting for signature…" : "Sign to enable live tracking"}
+            </Button>
+          </div>
         )}
         {isConnected && verified && (
           <Button variant="glass" onClick={() => void fetchMetrics(true)}>
@@ -172,7 +189,8 @@ export default function SponsorshipDashboard() {
               Usage & Sponsorship
             </h1>
             <p className="subheading-text mt-1 text-sm text-black/50">
-              Live counters for the connected wallet, updates every 3s.
+              Live counters for the connected wallet — updates on each sponsored
+              remit/swap and while this session is open.
             </p>
             {metrics.walletAddress && (
               <p className="mt-1 font-mono text-xs text-[#0A0A0A]">

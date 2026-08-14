@@ -1,10 +1,49 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
+
+/**
+ * SQLite `file:` URLs are resolved relative to process.cwd(), which breaks in a
+ * monorepo (API runs from apps/api or repo root). Pin relative sqlite paths to
+ * packages/db/prisma so identity/session queries always open the same DB.
+ */
+function resolveDatabaseUrl(): string | undefined {
+  const url = process.env.DATABASE_URL;
+  if (!url || !url.startsWith("file:")) return url;
+
+  const rawPath = url.slice("file:".length);
+  // Already absolute (Unix /path or Windows C:\ / C:/)
+  if (
+    path.isAbsolute(rawPath) ||
+    /^[a-zA-Z]:[\\/]/.test(rawPath) ||
+    rawPath.startsWith("\\\\")
+  ) {
+    return url;
+  }
+
+  const schemaDir = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../prisma",
+  );
+  const absolute = path.resolve(schemaDir, rawPath);
+  // Prisma on Windows prefers forward slashes in file URLs
+  const normalized = absolute.replace(/\\/g, "/");
+  return `file:${normalized}`;
+}
+
+const resolvedUrl = resolveDatabaseUrl();
+if (resolvedUrl) {
+  process.env.DATABASE_URL = resolvedUrl;
+}
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 export const prisma =
   globalForPrisma.prisma ??
   new PrismaClient({
+    datasources: resolvedUrl
+      ? { db: { url: resolvedUrl } }
+      : undefined,
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
 

@@ -13,6 +13,7 @@ export const arcTestnet = defineChain({
 
 export const USDC_ADDRESS =
   "0x3600000000000000000000000000000000000000" as const;
+/** EURC ERC-20 on Arc Testnet */
 export const EURC_ADDRESS =
   "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a" as const;
 
