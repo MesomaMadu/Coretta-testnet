@@ -2,12 +2,12 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Development: provider = "sqlite" with DATABASE_URL="file:./dev.db"
-// Production: set provider = "postgresql" and DATABASE_URL to a Postgres URL,
-// then run: npm run db:generate && npm run db:push  (or prisma migrate deploy when migrations exist)
+// Local/prod: use PostgreSQL when DATABASE_URL is a Postgres URL (synced from main project).
+// SQLite only if you intentionally set provider = "sqlite" and a file: URL.
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
@@ -50,6 +50,8 @@ model Wallet {
   scaAddress      String   @unique
   ownerAddress    String?
   ownerKeyRef     String?
+  /// Circle developer-controlled wallet UUID (when vendor is circle_modular)
+  vendorWalletId  String?  @unique
   vendor          String   @default("circle_modular")
   status          String   @default("ACTIVE")
   counterfactual  Boolean  @default(false)
@@ -314,6 +316,25 @@ model WalletUsageRecord {
   updatedAt            DateTime @updatedAt
 
   @@index([userId])
+}
+
+/**
+ * Durable app-page interaction history for a verified wallet.
+ * Only written when the client has a valid wallet session.
+ */
+model WalletInteraction {
+  id             String   @id @default(cuid())
+  userId         String
+  walletAddress  String
+  kind           String   // session | chat | preview | transfer | swap | navigation | signature | other
+  label          String
+  status         String   @default("complete") // pending | complete | failed
+  metadataJson   String?
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([walletAddress, createdAt])
+  @@index([kind, createdAt])
 }
 
 model UserRiskProfile {

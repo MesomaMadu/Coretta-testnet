@@ -7,6 +7,9 @@ import { createRemittance, executeRemittance } from "../services/orchestrator.js
 import {
   getWalletBalanceMicro,
   findUserByIdentity,
+  ensureCircleScaDeployed,
+  deployAllCounterfactualCircleScas,
+  resetAndDeployAllCircleScas,
 } from "../services/wallet.js";
 import {
   activateSmartWallet,
@@ -40,6 +43,10 @@ import {
 } from "../services/limits.js";
 import { determineOptimalRoute } from "../services/router.js";
 import { authenticateWalletOwnership } from "../services/wallet-auth.js";
+import {
+  listWalletInteractions,
+  recordWalletInteraction,
+} from "../services/wallet-interactions.js";
 import { normalizeWalletAddress } from "@coretta/shared";
 
 export async function registerRoutes(app: FastifyInstance) {
@@ -232,14 +239,35 @@ export async function registerRoutes(app: FastifyInstance) {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "WALLET_AUTH_FAILED";
-      const code =
+      // Connectivity / unreachable DB (not every Prisma validation error).
+      if (
+        /Unable to open the database file|Can't reach database server|P1001|P1017|P1003|ECONNREFUSED|ETIMEDOUT|ENOTFOUND/i.test(
+          message,
+        )
+      ) {
+        log.error("auth", "Wallet auth database error", { message });
+        return reply.code(503).send({
+          code: "DATABASE_UNAVAILABLE",
+          message:
+            "Database unavailable. Check DATABASE_URL reachability (Supabase session pooler :5432 or direct host) and restart the API.",
+        });
+      }
+      const status =
         message === "INVALID_SIGNATURE" ||
         message === "INVALID_OWNERSHIP_MESSAGE" ||
         message === "ADDRESS_MISMATCH" ||
         message === "MESSAGE_EXPIRED"
           ? 401
           : 400;
-      return reply.code(code).send({ code: message, message });
+      return reply.code(status).send({
+        code: message.slice(0, 80),
+        message:
+          status === 401
+            ? message
+            : message.includes("prisma")
+              ? "Database error during wallet login"
+              : message,
+      });
     }
   });
 
@@ -291,7 +319,64 @@ export async function registerRoutes(app: FastifyInstance) {
 
   app.get("/v1/wallet/status", async (req) => {
     const user = req.user!;
-    return getWalletBindingStatus(user.id);
+    // Best-effort deploy any counterfactual Circle SCAs while checking status.
+    for (const w of user.wallets) {
+      if (w.vendor === "circle_modular" && w.vendorWalletId && w.counterfactual) {
+        void ensureCircleScaDeployed({
+          id: w.id,
+          vendor: w.vendor,
+          vendorWalletId: w.vendorWalletId,
+          scaAddress: w.scaAddress,
+          counterfactual: w.counterfactual,
+        });
+      }
+    }
+    const binding = await getWalletBindingStatus(user.id);
+    const wallets = user.wallets.map((w) => ({
+      scaAddress: w.scaAddress,
+      vendor: w.vendor,
+      counterfactual: w.counterfactual,
+      vendorWalletId: w.vendorWalletId,
+    }));
+    return { ...binding, wallets };
+  });
+
+  /** Deploy the caller's still-counterfactual Circle SCAs on-chain. */
+  app.post("/v1/wallet/deploy", async (req, reply) => {
+    const user = req.user!;
+    const results = [];
+    for (const w of user.wallets) {
+      if (w.vendor === "circle_modular" && w.vendorWalletId) {
+        const r = await ensureCircleScaDeployed({
+          id: w.id,
+          vendor: w.vendor,
+          vendorWalletId: w.vendorWalletId,
+          scaAddress: w.scaAddress,
+          counterfactual: w.counterfactual,
+        });
+        results.push({
+          scaAddress: w.scaAddress,
+          deployed: r.deployed,
+          txHash: r.txHash,
+          error: r.error,
+          wasCounterfactual: w.counterfactual,
+        });
+      }
+    }
+    return reply.send({ ok: true, results });
+  });
+
+  /**
+   * Deploy all counterfactual Circle SCAs in the database.
+   * Query reset=true marks every circle_modular wallet counterfactual first, then deploys.
+   */
+  app.post("/v1/wallet/deploy-all", async (req, reply) => {
+    const query = (req.query ?? {}) as { reset?: string };
+    const reset = query.reset === "true" || query.reset === "1";
+    const summary = reset
+      ? await resetAndDeployAllCircleScas()
+      : await deployAllCounterfactualCircleScas();
+    return reply.send({ ok: true, reset, ...summary });
   });
 
   app.post("/v1/wallet/activate", async (req) => {
@@ -314,6 +399,119 @@ export async function registerRoutes(app: FastifyInstance) {
       .object({ primaryWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/) })
       .parse(req.body);
     return bindPrimaryWallet(user.id, body.primaryWalletAddress);
+  });
+
+  /**
+   * Record an app interaction for a verified wallet session.
+   * Client must only call this when ownership is verified (Bearer token + wallet).
+   */
+  app.post("/v1/wallet/interactions", async (req, reply) => {
+    const user = req.user!;
+    const body = z
+      .object({
+        walletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+        kind: z.enum([
+          "session",
+          "chat",
+          "preview",
+          "transfer",
+          "swap",
+          "navigation",
+          "signature",
+          "other",
+        ]),
+        label: z.string().min(1).max(500),
+        status: z.enum(["pending", "complete", "failed"]).optional(),
+        metadata: z.record(z.unknown()).optional(),
+      })
+      .parse(req.body);
+
+    const walletAddress = normalizeWalletAddress(body.walletAddress);
+    const linked =
+      user.identities.some(
+        (i) => i.type === "wallet" && i.normalizedValue === walletAddress,
+      ) ||
+      user.wallets.some(
+        (w) =>
+          w.ownerAddress?.toLowerCase() === walletAddress ||
+          w.scaAddress.toLowerCase() === walletAddress,
+      );
+
+    if (!linked) {
+      return reply.code(403).send({
+        code: "WALLET_NOT_LINKED",
+        message: "Wallet is not linked to this session.",
+      });
+    }
+
+    const row = await recordWalletInteraction({
+      userId: user.id,
+      walletAddress,
+      kind: body.kind,
+      label: body.label,
+      status: body.status,
+      metadata: body.metadata,
+    });
+
+    return reply.send({
+      ok: true,
+      interaction: {
+        id: row.id,
+        walletAddress: row.walletAddress,
+        kind: row.kind,
+        label: row.label,
+        status: row.status,
+        createdAt: row.createdAt.toISOString(),
+      },
+    });
+  });
+
+  /** Past interactions for the authenticated wallet (app history). */
+  app.get("/v1/wallet/interactions", async (req, reply) => {
+    const user = req.user!;
+    const query = z
+      .object({
+        walletAddress: z
+          .string()
+          .regex(/^0x[a-fA-F0-9]{40}$/)
+          .optional(),
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+      })
+      .parse(req.query ?? {});
+
+    let walletAddress = query.walletAddress
+      ? normalizeWalletAddress(query.walletAddress)
+      : user.identities.find((i) => i.type === "wallet")?.normalizedValue ??
+        null;
+
+    if (walletAddress) {
+      const linked =
+        user.identities.some(
+          (i) => i.type === "wallet" && i.normalizedValue === walletAddress,
+        ) ||
+        user.wallets.some(
+          (w) =>
+            w.ownerAddress?.toLowerCase() === walletAddress ||
+            w.scaAddress.toLowerCase() === walletAddress,
+        );
+      if (!linked) {
+        return reply.code(403).send({
+          code: "WALLET_NOT_LINKED",
+          message: "Wallet is not linked to this session.",
+        });
+      }
+    }
+
+    const interactions = await listWalletInteractions({
+      userId: user.id,
+      walletAddress,
+      limit: query.limit,
+    });
+
+    return reply.send({
+      walletAddress,
+      interactions,
+    });
   });
 
   app.post("/v1/wallet/rebind/send-otp", async (_req, reply) => {
@@ -421,21 +619,47 @@ export async function registerRoutes(app: FastifyInstance) {
 
     try {
       const settled = await executeRemittance(transfer.id);
-      const eoa =
+      // Usage dashboard is wallet-scoped by connected EOA — never use SCA here.
+      const eoaRaw =
         user.identities.find((i) => i.type === "wallet")?.normalizedValue ??
-        user.wallets[0]?.ownerAddress ??
+        user.wallets.find((w) => w.ownerAddress)?.ownerAddress ??
         null;
-      await trackUsageEvent({
-        walletAddress: eoa,
-        userId: user.id,
-        key: "sponsoredTxCount",
-      });
-      await trackUsageEvent({
-        walletAddress: eoa,
-        userId: user.id,
-        key: "sponsoredUsdMicro",
-        amount: settled.amountMicro,
-      });
+      let eoa: string | null = null;
+      if (eoaRaw) {
+        try {
+          eoa = normalizeWalletAddress(eoaRaw);
+        } catch {
+          eoa = eoaRaw.toLowerCase();
+        }
+      }
+      if (eoa) {
+        await trackUsageEvent({
+          walletAddress: eoa,
+          userId: user.id,
+          key: "sponsoredTxCount",
+        });
+        await trackUsageEvent({
+          walletAddress: eoa,
+          userId: user.id,
+          key: "sponsoredUsdMicro",
+          amount: settled.amountMicro,
+        });
+      } else {
+        // Fallback: user-scoped counters only (no EOA linked)
+        await trackUsageEvent({
+          userId: user.id,
+          key: "sponsoredTxCount",
+        });
+        await trackUsageEvent({
+          userId: user.id,
+          key: "sponsoredUsdMicro",
+          amount: settled.amountMicro,
+        });
+        log.info("remit", "Sponsored usage tracked without EOA (user-scoped)", {
+          transferId: settled.id,
+          userId: user.id,
+        });
+      }
       await createAuditEvent({
         actorId: user.id,
         action: "TRANSACTION_SUBMITTED",
@@ -450,6 +674,7 @@ export async function registerRoutes(app: FastifyInstance) {
         transferId: settled.id,
         state: settled.state,
         txHash: settled.txHash,
+        usageWallet: eoa,
       });
       return reply.send({
         transferId: settled.id,
@@ -506,10 +731,18 @@ export async function registerRoutes(app: FastifyInstance) {
       });
     }
 
-    const eoa =
+    const eoaRaw =
       user.identities.find((i) => i.type === "wallet")?.normalizedValue ??
-      user.wallets[0]?.ownerAddress ??
+      user.wallets.find((w) => w.ownerAddress)?.ownerAddress ??
       null;
+    let eoa: string | null = null;
+    if (eoaRaw) {
+      try {
+        eoa = normalizeWalletAddress(eoaRaw);
+      } catch {
+        eoa = eoaRaw.toLowerCase();
+      }
+    }
 
     const result = await executeTokenSwap({
       userId: user.id,
@@ -554,6 +787,7 @@ export async function registerRoutes(app: FastifyInstance) {
       state: t.state,
       createdAt: t.createdAt.toISOString(),
       txHash: t.txHash,
+      failureReason: t.failureReason ?? undefined,
       explorerUrl: t.txHash ? `${ARC_EXPLORER}/tx/${t.txHash}` : undefined,
       counterpartyAddress:
         t.senderUserId === user.id

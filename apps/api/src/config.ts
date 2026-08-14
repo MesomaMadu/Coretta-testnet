@@ -1,4 +1,11 @@
-import "dotenv/config";
+import { config as loadEnv } from "dotenv";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Load monorepo root .env first (API often starts with cwd = apps/api).
+const here = path.dirname(fileURLToPath(import.meta.url));
+loadEnv({ path: path.resolve(here, "../../../.env") });
+loadEnv(); // apps/api/.env or process cwd overrides
 
 function requiredInProd(name: string, value: string | undefined, fallback: string): string {
   if (value && value.trim()) return value.trim();

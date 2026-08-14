@@ -4,6 +4,8 @@ import { loginWithIdentity } from "./auth.js";
 import { trackUsageEvent } from "./limits.js";
 import { createAuditEvent } from "./audit.js";
 import { activateSmartWallet } from "./wallet-binding.js";
+import { recordWalletInteraction } from "./wallet-interactions.js";
+import { ensureCircleScaDeployed } from "./wallet.js";
 
 const OWNERSHIP_MESSAGE_RE =
   /Sign this message to verify ownership of your wallet and activate your Coretta session\.\s*\n\s*\nAddress:\s*(0x[a-fA-F0-9]{40})\s*\nChain ID:\s*(\d+)\s*\nIssued At:\s*([^\n]+)/i;
@@ -54,6 +56,20 @@ export async function authenticateWalletOwnership(params: {
   }
 
   const { token, user, expiresAt } = await loginWithIdentity("wallet", expected);
+
+  // Deploy any still-counterfactual Circle SCAs for this user (existing + new).
+  for (const w of user.wallets) {
+    if (w.vendor === "circle_modular" && w.vendorWalletId && w.counterfactual) {
+      await ensureCircleScaDeployed({
+        id: w.id,
+        vendor: w.vendor,
+        vendorWalletId: w.vendorWalletId,
+        scaAddress: w.scaAddress,
+        counterfactual: w.counterfactual,
+      });
+    }
+  }
+
   // Bind + activate smart wallet to the connected EOA — email not required.
   const binding = await activateSmartWallet(user.id, expected);
   await trackUsageEvent({
@@ -70,6 +86,18 @@ export async function authenticateWalletOwnership(params: {
     actorId: user.id,
     action: "WALLET_OWNERSHIP_VERIFIED",
     metadata: { address: expected, chainId: parsed.chainId },
+  });
+
+  await recordWalletInteraction({
+    userId: user.id,
+    walletAddress: expected,
+    kind: "session",
+    label: "Wallet connected and ownership verified",
+    status: "complete",
+    metadata: {
+      chainId: parsed.chainId,
+      smartWalletAddress: binding.smartWalletAddress,
+    },
   });
 
   return {

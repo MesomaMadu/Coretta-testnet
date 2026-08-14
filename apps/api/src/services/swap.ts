@@ -124,10 +124,19 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
       (result as { txHash?: string }).txHash ??
       (result as { transactionHash?: string }).transactionHash;
 
+    // Prefer EOA for wallet-scoped usage (Usage dashboard queries by connected EOA).
+    // Never fall back to SCA — that would write counters under a different key.
+    const usageWallet = req.eoaAddress ?? null;
     await trackUsageEvent({
-      walletAddress: req.eoaAddress ?? req.walletAddress,
+      walletAddress: usageWallet,
       userId: req.userId,
       key: "swapRequestCount",
+    });
+    // Gas on Arc is USDC-sponsored for chatbot swaps — count toward sponsorship quota.
+    await trackUsageEvent({
+      walletAddress: usageWallet,
+      userId: req.userId,
+      key: "sponsoredTxCount",
     });
     await createAuditEvent({
       actorId: req.userId,
@@ -138,6 +147,7 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
         amountIn: amount,
         txHash,
         chain: ARC_CHAIN,
+        usageWallet,
       },
     });
 

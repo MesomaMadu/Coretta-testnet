@@ -4,17 +4,56 @@ import { validateAmountToken } from "./security";
 
 const MAX_RECIPIENTS = 10;
 
-function parseIdentity(name: string): BatchRecipient["identityType"] {
-  if (/^0x[a-fA-F0-9]{40}$/.test(name.trim())) return "address";
-  if (/^[\w.+-]+@[\w.-]+\.\w+$/.test(name.trim())) return "email";
+/** Full EVM address (0x + 40 hex). */
+const EVM_ADDRESS_RE = /0x[a-fA-F0-9]{40}/g;
+const EVM_ADDRESS_ONLY_RE = /^0x[a-fA-F0-9]{40}$/;
+const EMAIL_ONLY_RE = /^[\w.+-]+@[\w.-]+\.\w+$/;
+
+export function parseIdentity(token: string): BatchRecipient["identityType"] {
+  const t = token.trim();
+  if (EVM_ADDRESS_ONLY_RE.test(t)) return "address";
+  if (EMAIL_ONLY_RE.test(t)) return "email";
   return "name";
 }
 
-function splitNames(segment: string): string[] {
-  return segment
+/**
+ * Split a multi-recipient tail into tokens.
+ * Prefers full 0x addresses, then emails, then plain names (comma / "and").
+ */
+export function splitRecipients(segment: string): string[] {
+  const raw = segment.replace(/[.!?]$/, "").trim();
+  if (!raw) return [];
+
+  // Extract full EVM addresses first so they never get truncated into "names".
+  const addresses = raw.match(EVM_ADDRESS_RE) ?? [];
+  if (addresses.length >= 2) {
+    return addresses.map((a) => a);
+  }
+  if (addresses.length === 1) {
+    // One address + maybe other tokens after removing it
+    const rest = raw
+      .replace(addresses[0], " ")
+      .split(/\s*,\s*|\s+and\s+/i)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return [addresses[0], ...rest];
+  }
+
+  return raw
     .split(/\s*,\s*|\s+and\s+/i)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+function toRecipient(token: string, amount: string): BatchRecipient {
+  const name = token.trim();
+  const identityType = parseIdentity(name);
+  return {
+    name,
+    amount,
+    identityType,
+    displayAddress: identityType === "address" ? name : undefined,
+  };
 }
 
 /** Parse "50 to Sarah, 100 to David" or equal split "25 to Sarah, David, Michael" */
@@ -27,23 +66,20 @@ export function parseMultiSend(
 
   const asset = /\bEURC\b/i.test(text) ? "EURC" : defaultAsset;
 
-  // Per-recipient amounts: "50 to Sarah, 100 to David, 20 to Maria"
+  // Per-recipient amounts — allow 0x addresses, emails, and names.
+  // Examples:
+  //   "50 USDC to 0xabc…, 100 to 0xdef…"
+  //   "50 to Sarah, 100 to david@email.com"
   const perAmountPattern =
-    /(\d+(?:\.\d{1,6})?)\s*(?:USDC|EURC)?\s+to\s+([A-Za-z@][\w.@+-]*)/gi;
+    /(\d+(?:\.\d{1,6})?)\s*(?:USDC|EURC)?\s+to\s+(0x[a-fA-F0-9]{40}|[\w.+-]+@[\w.-]+\.\w+|[A-Za-z][\w.-]*)/gi;
   const perMatches = [...text.matchAll(perAmountPattern)];
   if (perMatches.length >= 2) {
     const recipients: BatchRecipient[] = [];
     for (const m of perMatches) {
       const amount = m[1];
-      const name = m[2].trim();
+      const token = m[2].trim();
       if (!validateAmountToken(amount)) continue;
-      recipients.push({
-        name,
-        amount,
-        identityType: parseIdentity(name),
-        displayAddress:
-          parseIdentity(name) === "address" ? name : `Resolved · ${name}`,
-      });
+      recipients.push(toRecipient(token, amount));
     }
     if (recipients.length < 2) return null;
     if (recipients.length > MAX_RECIPIENTS) return null;
@@ -54,7 +90,7 @@ export function parseMultiSend(
     return { recipients: dedupeRecipients(recipients), asset, total };
   }
 
-  // Equal split: "send 25 USDC to Sarah, David, and Michael"
+  // Equal split: "send 25 USDC to 0xA…, 0xB…" or "send 25 to Sarah, David, and Michael"
   const equalMatch =
     /(?:send|transfer)\s+(\d+(?:\.\d{1,6})?)\s*(USDC|EURC)?\s+to\s+(.+)/i.exec(text);
   if (!equalMatch) return null;
@@ -62,17 +98,19 @@ export function parseMultiSend(
   const amount = equalMatch[1];
   if (!validateAmountToken(amount)) return null;
 
-  const namesRaw = equalMatch[3].replace(/[.!?]$/, "");
-  const names = splitNames(namesRaw);
-  if (names.length < 2 || names.length > MAX_RECIPIENTS) return null;
+  const tokens = splitRecipients(equalMatch[3]);
+  if (tokens.length < 2 || tokens.length > MAX_RECIPIENTS) return null;
 
-  const recipients = names.map((name) => ({
-    name,
-    amount,
-    identityType: parseIdentity(name),
-    displayAddress:
-      parseIdentity(name) === "address" ? name : `Resolved · ${name}`,
-  }));
+  // If every token after the first is not a real identity (e.g. leftover "10 to 0x…"),
+  // reject equal-split so per-amount can own it (already tried above).
+  const recipients = tokens.map((token) => toRecipient(token, amount));
+  const looksLikeBroken =
+    recipients.some(
+      (r) =>
+        r.identityType === "name" &&
+        (/^\d/.test(r.name) || /\bto\b/i.test(r.name) || r.name.includes("0x")),
+    );
+  if (looksLikeBroken) return null;
 
   const total = (parseFloat(amount) * recipients.length)
     .toFixed(6)

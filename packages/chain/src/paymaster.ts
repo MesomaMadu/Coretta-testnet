@@ -40,6 +40,7 @@ export function createCirclePaymaster({
         paymasterVerificationGasLimit: 200_000n,
         paymasterPostOpGasLimit: 15_000n,
         isFinal: true as const,
+        feePayer: 'sponsor',
       };
     },
   };

@@ -4,6 +4,8 @@ export const WALLET_VERIFY_KEY = "coretta_wallet_verified";
 export const WALLET_VERIFY_ADDR_KEY = "coretta_wallet_verified_address";
 export const SMART_WALLET_ACTIVE_KEY = "coretta_smart_wallet_active";
 export const BOUND_WALLET_KEY = "coretta_bound_wallet";
+/** Address we already requested an ownership sign for (survives HMR / remounts). */
+export const OWNERSHIP_PROMPTED_KEY = "coretta_ownership_prompted_address";
 
 export function buildRebindMessage(params: {
   address: string;
@@ -51,9 +53,29 @@ Wallet: ${params.address}
 This authorization does not execute the transfer. You must approve the transaction in your wallet.`;
 }
 
+export function getOwnershipPromptedAddress(): string | null {
+  if (typeof window === "undefined") return null;
+  return sessionStorage.getItem(OWNERSHIP_PROMPTED_KEY);
+}
+
+export function setOwnershipPromptedAddress(address: string) {
+  if (typeof window === "undefined" || !address) return;
+  sessionStorage.setItem(OWNERSHIP_PROMPTED_KEY, address.toLowerCase());
+}
+
+export function clearOwnershipPromptedAddress() {
+  if (typeof window === "undefined") return;
+  sessionStorage.removeItem(OWNERSHIP_PROMPTED_KEY);
+}
+
+export function wasOwnershipPromptedFor(address: string): boolean {
+  if (typeof window === "undefined" || !address) return false;
+  return getOwnershipPromptedAddress() === address.toLowerCase();
+}
+
 /**
- * Ownership verification is connection-scoped only (sessionStorage).
- * Full disconnect clears it so the next connect always re-prompts a sign.
+ * Ownership verification is connection-scoped (sessionStorage).
+ * Cleared only on real disconnect / account switch — not on reconnect flicker.
  */
 export function clearWalletVerification(address?: string) {
   if (typeof window === "undefined") return;
@@ -75,6 +97,7 @@ export function clearWalletVerification(address?: string) {
 export function clearWalletSession() {
   if (typeof window === "undefined") return;
   sessionStorage.removeItem(SMART_WALLET_ACTIVE_KEY);
+  clearOwnershipPromptedAddress();
   clearWalletVerification();
 }
 
@@ -104,10 +127,11 @@ export function isWalletVerifiedFor(address: string): boolean {
 export function setWalletVerified(address: string) {
   if (typeof window === "undefined" || !address) return;
   const normalized = address.toLowerCase();
-  // Strip legacy durable flag so reconnect always requires a fresh signature.
+  // Connection-scoped only; cleared on disconnect so the next connect re-signs once.
   localStorage.removeItem(`coretta_verified_${normalized}`);
   sessionStorage.setItem(WALLET_VERIFY_KEY, "true");
   sessionStorage.setItem(WALLET_VERIFY_ADDR_KEY, normalized);
+  setOwnershipPromptedAddress(normalized);
   window.dispatchEvent(
     new CustomEvent("coretta-wallet-verified", { detail: { address: normalized } }),
   );

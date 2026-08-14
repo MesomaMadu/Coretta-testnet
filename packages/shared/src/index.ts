@@ -10,6 +10,12 @@ export const ARC_EXPLORER = "https://testnet.arcscan.app";
 export const USDC_ADDRESS =
   "0x3600000000000000000000000000000000000000" as const;
 
+/** EURC ERC-20 on Arc Testnet (6 decimals) */
+export const EURC_ADDRESS =
+  "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a" as const;
+
+export const EURC_DECIMALS = 6;
+
 /** Circle Paymaster v0.7 on Arc Testnet */
 export const PAYMASTER_V07_ADDRESS =
   "0x31BE08D380A21fc740883c0BC434FcFc88740b58" as const;

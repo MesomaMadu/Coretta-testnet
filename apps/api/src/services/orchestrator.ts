@@ -1,3 +1,4 @@
+import { sendCircleUsdcTransfer, waitForCircleTransaction } from "./transactions.js";
 import { prisma } from "@coretta/db";
 import {
   sendUsdcTransferUserOp,
@@ -96,6 +97,55 @@ export async function createRemittance({
   return transfer;
 }
 
+async function markSettledAndBumpLimits(params: {
+  transferId: string;
+  senderUserId: string;
+  amountMicro: bigint;
+  txHash: string;
+  userOpHash?: string | null;
+  circleTxId?: string;
+}) {
+  const updated = await prisma.$transaction(async (tx) => {
+    const t = await tx.transfer.update({
+      where: { id: params.transferId },
+      data: {
+        state: "SETTLED",
+        txHash: params.txHash,
+        ...(params.userOpHash ? { userOpHash: params.userOpHash } : {}),
+      },
+    });
+    const limits = await tx.userLimit.findUnique({
+      where: { userId: t.senderUserId },
+    });
+    if (limits) {
+      await tx.userLimit.update({
+        where: { userId: t.senderUserId },
+        data: {
+          dailyTxCount: limits.dailyTxCount + 1,
+          dailySentMicro: limits.dailySentMicro + t.amountMicro,
+        },
+      });
+    }
+    return t;
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      actorId: params.senderUserId,
+      action: "TRANSFER_SETTLED",
+      metadata: JSON.stringify({
+        transferId: params.transferId,
+        txHash: params.txHash,
+        userOpHash: params.userOpHash ?? undefined,
+        circleTxId: params.circleTxId,
+        amount: formatMicroToUsdc(params.amountMicro),
+      }),
+    },
+  });
+
+  return updated;
+}
+
 export async function executeRemittance(transferId: string) {
   const transfer = await prisma.transfer.findUniqueOrThrow({
     where: { id: transferId },
@@ -112,12 +162,37 @@ export async function executeRemittance(transferId: string) {
     throw new Error(`TRANSFER_DENIED:${transfer.policyReason}`);
   }
 
-  await prisma.transfer.update({
-    where: { id: transferId },
-    data: { state: "SUBMITTED" },
-  });
-
   try {
+    // Circle developer-controlled SCA path
+    if (
+      transfer.senderWallet?.vendor === "circle_modular" &&
+      transfer.senderWallet.vendorWalletId
+    ) {
+      await prisma.transfer.update({
+        where: { id: transferId },
+        data: { state: "SUBMITTED" },
+      });
+
+      const result = await sendCircleUsdcTransfer({
+        vendorWalletId: transfer.senderWallet.vendorWalletId,
+        recipientAddress: transfer.recipientWallet.scaAddress,
+        amountMicro: transfer.amountMicro,
+        // Stable key so accidental double-execute of same transfer does not double-spend
+        idempotencyKey: transfer.idempotencyKey,
+      });
+
+      const final = await waitForCircleTransaction(result.circleTxId);
+
+      return markSettledAndBumpLimits({
+        transferId,
+        senderUserId: transfer.senderUserId,
+        amountMicro: transfer.amountMicro,
+        txHash: final.txHash,
+        circleTxId: result.circleTxId,
+      });
+    }
+
+    // Legacy Safe + encrypted owner key + UserOp path
     const ownerKey = await getOwnerKeyForWallet(transfer.senderWalletId);
     const { account } = await createSmartAccountFromOwnerKey(ownerKey, client);
 
@@ -127,54 +202,22 @@ export async function executeRemittance(transferId: string) {
       recipient: transfer.recipientWallet.scaAddress as Address,
       amountMicro: transfer.amountMicro,
     });
-    // Paymaster + bundler path lives inside sendUsdcTransferUserOp (Circle Paymaster v0.7).
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const t = await tx.transfer.update({
-        where: { id: transferId },
-        data: {
-          state: "SETTLED",
-          userOpHash,
-          txHash: transactionHash,
-        },
-      });
-      const limits = await tx.userLimit.findUnique({
-        where: { userId: transfer.senderUserId },
-      });
-      if (limits) {
-        await tx.userLimit.update({
-          where: { userId: transfer.senderUserId },
-          data: {
-            dailyTxCount: limits.dailyTxCount + 1,
-            dailySentMicro: limits.dailySentMicro + transfer.amountMicro,
-          },
-        });
-      }
-      return t;
+    return markSettledAndBumpLimits({
+      transferId,
+      senderUserId: transfer.senderUserId,
+      amountMicro: transfer.amountMicro,
+      txHash: transactionHash,
+      userOpHash,
     });
-
-    await prisma.auditLog.create({
-      data: {
-        actorId: transfer.senderUserId,
-        action: "TRANSFER_SETTLED",
-        metadata: JSON.stringify({
-          transferId,
-          userOpHash,
-          txHash: transactionHash,
-          amount: formatMicroToUsdc(transfer.amountMicro),
-        }),
-      },
-    });
-
-    return updated;
   } catch (err) {
     const message = err instanceof Error ? err.message : "UNKNOWN_ERROR";
     log.remit("executeRemittance failed", { transferId, message });
     if (/paymaster|permit|sponsorship/i.test(message)) {
       log.paymaster("Paymaster-related failure", { transferId, message });
     }
-    if (/rpc|rate limit|ECONN|timeout/i.test(message)) {
-      log.rpc("RPC-related failure", { transferId, message });
+    if (/rpc|rate limit|ECONN|timeout|Circle/i.test(message)) {
+      log.rpc("RPC/Circle-related failure", { transferId, message });
     }
     await prisma.transfer.update({
       where: { id: transferId },

@@ -12,6 +12,9 @@ coverage
 
 # Local secrets / tooling
 recovery/
+ENTITY_SECRET_BACKUP.txt
+*.pem
+*-recovery-file.json
 .cursor/
 .claude/
 
