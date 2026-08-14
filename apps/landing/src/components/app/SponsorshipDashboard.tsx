@@ -16,10 +16,36 @@ import {
   Link2,
 } from "lucide-react";
 import { getApiToken } from "@/lib/api";
-import type { UserUsageMetrics } from "@coretta/shared";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
 import { useWalletSession } from "@/hooks/useWalletSession";
 import { Button } from "@/components/ui/button";
+type UserTier = "anonymous" | "email_verified" | "wallet_verified" | "trusted";
+
+interface UserUsageMetrics {
+  userTier: UserTier;
+  walletAddress: string | null;
+  live: boolean;
+  sponsoredTxCount: number;
+  sponsoredTxLimit: number;
+  sponsoredUsdSpent: number;
+  sponsoredUsdLimit: number;
+  aiRequestCount: number;
+  aiRequestLimit: number;
+  otpRequestCount: number;
+  otpRequestLimit: number;
+  swapRequestCount: number;
+  swapRequestLimit: number;
+  voiceRequestCount: number;
+  voiceRequestLimit: number;
+  txSimulationCount: number;
+  batchTxCount: number;
+  walletCreationCount: number;
+  signatureRequestCount: number;
+  connectionCount: number;
+  resetInSeconds: number;
+  lastResetAt: string;
+  updatedAt: string;
+}
 
 export default function SponsorshipDashboard() {
   const { address, isConnected } = useAccount();
