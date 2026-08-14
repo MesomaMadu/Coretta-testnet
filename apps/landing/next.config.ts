@@ -7,6 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: path.join(__dirname, "../.."),
+  transpilePackages: ["@coretta/shared"],
   webpack: (config) => {
     config.resolve.alias = {
       ...config.resolve.alias,
