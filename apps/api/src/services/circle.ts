@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { initiateDeveloperControlledWalletsClient } from "@circle-fin/developer-controlled-wallets";
+import { createRequire } from "node:module";
+import type * as CircleDeveloperWallets from "@circle-fin/developer-controlled-wallets";
 import { USDC_ADDRESS } from "@coretta/shared";
 import { config } from "../config.js";
 import { log } from "../lib/log.js";
+
+// Vercel externalizes this dual ESM/CommonJS SDK. Loading its CommonJS export
+// avoids a native ESM named-export mismatch in the serverless runtime.
+const circleDeveloperWallets = createRequire(import.meta.url)(
+  "@circle-fin/developer-controlled-wallets",
+) as typeof CircleDeveloperWallets;
+const { initiateDeveloperControlledWalletsClient } = circleDeveloperWallets;
 
 export function getCircleClient() {
   if (!config.circleApiKey || !config.circleEntitySecret) {
