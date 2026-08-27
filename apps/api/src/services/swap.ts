@@ -1,11 +1,21 @@
-import { AppKit } from "@circle-fin/app-kit";
-import { createCircleWalletsAdapter } from "@circle-fin/adapter-circle-wallets";
+import { createRequire } from "node:module";
+import type * as CircleAppKit from "@circle-fin/app-kit";
+import type * as CircleWalletsAdapter from "@circle-fin/adapter-circle-wallets";
 import { config } from "../config.js";
 import { log } from "../lib/log.js";
 import { trackUsageEvent } from "./limits.js";
 import { createAuditEvent } from "./audit.js";
 import { ARC_EXPLORER } from "@coretta/shared";
 import { prisma } from "@coretta/db";
+
+// Use the packages' CommonJS exports in Vercel's serverless runtime. Their ESM
+// adapter path imports the dual-module developer-wallet SDK as native ESM,
+// which Vercel currently externalizes without its named exports.
+const circleRequire = createRequire(import.meta.url);
+const { AppKit } = circleRequire("@circle-fin/app-kit") as typeof CircleAppKit;
+const { createCircleWalletsAdapter } = circleRequire(
+  "@circle-fin/adapter-circle-wallets",
+) as typeof CircleWalletsAdapter;
 
 export type SwapToken = "USDC" | "EURC" | "NATIVE" | "USDT";
 
