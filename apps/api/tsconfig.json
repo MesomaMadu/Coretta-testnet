@@ -3,7 +3,9 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
-    "noEmit": false
+    "noEmit": false,
+    "strict": true,
+    "strictNullChecks": true
   },
   "include": ["src"]
 }
