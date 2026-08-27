@@ -217,6 +217,10 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
   } catch (err) {
     const message = err instanceof Error ? err.message : "SWAP_FAILED";
     const noRoute = /no route available|route or resource not found/i.test(message);
+    const runtimeDependencyFailure =
+      /ERR_REQUIRE_ESM|require\(\) of ES Module|rpc-websockets|uuid\/dist/i.test(
+        message,
+      );
     log.swap("Swap execution failed", { message });
     await createAuditEvent({
       actorId: req.userId,
@@ -230,9 +234,15 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
     });
     return {
       ok: false,
-      code: noRoute ? "SWAP_ROUTE_UNAVAILABLE" : "SWAP_FAILED",
+      code: noRoute
+        ? "SWAP_ROUTE_UNAVAILABLE"
+        : runtimeDependencyFailure
+          ? "SWAP_SERVICE_UNAVAILABLE"
+          : "SWAP_FAILED",
       message: noRoute
         ? `No ${req.tokenIn} to ${req.tokenOut} liquidity route is available on Arc Testnet right now. Try the reverse direction or retry later.`
+        : runtimeDependencyFailure
+          ? "The swap service is temporarily unavailable. Please retry shortly."
         : message.includes("wallet") || message.includes("not found")
           ? "Swap failed: wallet must be a Circle developer-controlled wallet on Arc Testnet. Local SCAs may not be eligible for App Kit swaps."
           : message,

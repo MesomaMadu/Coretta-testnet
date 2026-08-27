@@ -1,14 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import {
   ARC_TESTNET_CHAIN_ID,
   buildTransactionAuthorizationMessage,
 } from "../packages/shared/dist/index.js";
 import { parseOwnershipMessage } from "../apps/api/dist/services/wallet-auth.js";
 import { parseTransactionAuthorizationMessage } from "../apps/api/dist/services/transaction-auth.js";
+import { normalizePrivyJwtVerificationKey } from "../apps/api/dist/lib/privy-verification.js";
 
 const address = "0x1111111111111111111111111111111111111111";
 const issuedAt = "2026-08-19T00:00:00.000Z";
+
+test("Privy verification keys reject malformed overrides and normalize escaped PEM", () => {
+  assert.equal(normalizePrivyJwtVerificationKey("not-a-public-key"), undefined);
+
+  const { publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const pem = publicKey.export({ type: "spki", format: "pem" }).toString().trim();
+  assert.equal(
+    normalizePrivyJwtVerificationKey(pem.replace(/\n/g, "\\n")),
+    pem,
+  );
+});
 
 test("transaction authorization preserves the exact remit intent", () => {
   const intent = {

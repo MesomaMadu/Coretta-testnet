@@ -2,6 +2,8 @@ import { PrivyClient } from "@privy-io/node";
 import { config } from "../config.js";
 import { prisma } from "@coretta/db";
 import { normalizeEmail } from "@coretta/shared";
+import { log } from "../lib/log.js";
+import { normalizePrivyJwtVerificationKey } from "../lib/privy-verification.js";
 import { createSessionForUser, loginWithIdentity } from "./auth.js";
 
 let client: PrivyClient | null = null;
@@ -14,12 +16,19 @@ function getPrivyClient(): PrivyClient {
   if (!config.privyAppId || !config.privyAppSecret) {
     throw new Error("PRIVY_NOT_CONFIGURED");
   }
+  const verificationKey = normalizePrivyJwtVerificationKey(
+    config.privyJwtVerificationKey,
+  );
+  if (config.privyJwtVerificationKey && !verificationKey) {
+    log.warn(
+      "auth",
+      "Ignoring invalid PRIVY_JWT_VERIFICATION_KEY and using Privy's JWKS",
+    );
+  }
   client ??= new PrivyClient({
     appId: config.privyAppId,
     appSecret: config.privyAppSecret,
-    ...(config.privyJwtVerificationKey
-      ? { jwtVerificationKey: config.privyJwtVerificationKey }
-      : {}),
+    ...(verificationKey ? { jwtVerificationKey: verificationKey } : {}),
   });
   return client;
 }

@@ -16,6 +16,14 @@ export function humanizeTxFailure(err: unknown): string {
   if (lower.includes("bundler")) {
     return "The transaction could not be submitted by the bundler. Please try again.";
   }
+  if (
+    lower.includes("swap_service_unavailable") ||
+    lower.includes("swap service is temporarily unavailable") ||
+    lower.includes("err_require_esm") ||
+    lower.includes("require() of es module")
+  ) {
+    return "The swap service is temporarily unavailable. Please try again shortly.";
+  }
   if (lower.includes("congestion") || lower.includes("timeout") || lower.includes("nonce")) {
     return "The network was unable to process the transaction at this time.";
   }
