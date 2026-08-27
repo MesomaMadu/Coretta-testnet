@@ -651,7 +651,13 @@ export async function registerRoutes(app: FastifyInstance) {
   /** Deploy the caller's still-counterfactual Circle SCAs on-chain. */
   app.post("/v1/wallet/deploy", async (req, reply) => {
     const user = req.user!;
-    const results = [];
+    const results: Array<{
+      scaAddress: string;
+      deployed: boolean;
+      txHash: string | undefined;
+      error: string | undefined;
+      wasCounterfactual: boolean;
+    }> = [];
     for (const w of user.wallets) {
       if (w.vendor === "circle_modular" && w.vendorWalletId) {
         const r = await ensureCircleScaDeployed({
