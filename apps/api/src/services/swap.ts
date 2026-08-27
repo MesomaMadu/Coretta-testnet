@@ -12,10 +12,26 @@ import { prisma } from "@coretta/db";
 // adapter path imports the dual-module developer-wallet SDK as native ESM,
 // which Vercel currently externalizes without its named exports.
 const circleRequire = createRequire(import.meta.url);
-const { AppKit } = circleRequire("@circle-fin/app-kit") as typeof CircleAppKit;
-const { createCircleWalletsAdapter } = circleRequire(
-  "@circle-fin/adapter-circle-wallets",
-) as typeof CircleWalletsAdapter;
+let circleSwapSdk:
+  | {
+      AppKit: typeof CircleAppKit.AppKit;
+      createCircleWalletsAdapter: typeof CircleWalletsAdapter.createCircleWalletsAdapter;
+    }
+  | undefined;
+
+function getCircleSwapSdk() {
+  if (!circleSwapSdk) {
+    const appKit = circleRequire("@circle-fin/app-kit") as typeof CircleAppKit;
+    const walletsAdapter = circleRequire(
+      "@circle-fin/adapter-circle-wallets",
+    ) as typeof CircleWalletsAdapter;
+    circleSwapSdk = {
+      AppKit: appKit.AppKit,
+      createCircleWalletsAdapter: walletsAdapter.createCircleWalletsAdapter,
+    };
+  }
+  return circleSwapSdk;
+}
 
 export type SwapToken = "USDC" | "EURC" | "NATIVE" | "USDT";
 
@@ -103,6 +119,7 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
   }
 
   try {
+    const { AppKit, createCircleWalletsAdapter } = getCircleSwapSdk();
     const kit = new AppKit();
     const adapter = createCircleWalletsAdapter({
       apiKey: config.circleApiKey,
