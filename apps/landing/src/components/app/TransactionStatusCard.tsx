@@ -1,7 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Copy, ExternalLink } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Clock3,
+  Copy,
+  ExternalLink,
+  XCircle,
+} from "lucide-react";
 import type { TransactionRecord } from "@/lib/transaction-store";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +42,13 @@ export default function TransactionStatusCard({ record }: Props) {
         ? "Your transaction has been successfully settled."
         : record.failureReason ?? "An unknown execution error occurred.";
 
+  const StatusIcon =
+    record.status === "pending"
+      ? Clock3
+      : record.status === "settled"
+        ? CheckCircle2
+        : XCircle;
+
   const copyHash = async () => {
     if (!record.txHash) return;
     await navigator.clipboard.writeText(record.txHash);
@@ -51,7 +66,16 @@ export default function TransactionStatusCard({ record }: Props) {
       )}
     >
       <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="font-semibold text-black">{title}</p>
+        <div className="flex items-center gap-2">
+          <StatusIcon
+            className={cn(
+              "h-4 w-4 shrink-0",
+              record.status === "failed" ? "text-rose-600" : "text-[#7C3AED]",
+            )}
+            aria-hidden="true"
+          />
+          <p className="font-semibold text-black">{title}</p>
+        </div>
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}

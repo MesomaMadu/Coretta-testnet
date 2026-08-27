@@ -30,9 +30,9 @@ export default function HaloInfoSection() {
             </Link>
           </div>
           <p className="text-2xl leading-relaxed text-black/70 md:text-3xl">
-            {BRAND_NAME} is a gasless USDC remittance product on Arc Testnet. Your
+            {BRAND_NAME} is a USDC-first remittance product on Arc Testnet. Your
             savings stay dollar-anchored while {AGENT_NAME} routes transfers with
-            sponsored gas and smart-wallet security.
+            USDC-denominated gas and smart-wallet security.
           </p>
         </div>
 
@@ -53,7 +53,7 @@ export default function HaloInfoSection() {
             </h3>
             <p className="mt-3 max-w-xs text-base text-black/70">
               Send USDC with locked previews, ownership signatures, and Circle
-              Paymaster sponsorship on Arc Testnet.
+              Paymaster-enabled USDC gas on Arc Testnet.
             </p>
           </article>
 

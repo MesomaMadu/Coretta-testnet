@@ -21,13 +21,13 @@ export default function HaloSecurityStrip() {
           <p className="mt-4 max-w-xl text-base leading-relaxed text-white/60">
             {BRAND_NAME} binds a smart wallet to your connected EOA. {AGENT_NAME}{" "}
             only prepares locked previews. Remittance and swaps execute after your
-            wallet approval, with Circle Paymaster sponsorship.
+            wallet approval, with Circle Paymaster USDC fees.
           </p>
           <ul className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {[
               "Ownership signature",
               "Smart wallet binding",
-              "Sponsored gas",
+              "USDC gas fees",
               "Success or failure only",
             ].map((item) => (
               <li

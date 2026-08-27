@@ -49,6 +49,11 @@ export const config = {
   circleEntitySecret: process.env.CIRCLE_ENTITY_SECRET,
   circleWalletSetId: process.env.CIRCLE_WALLET_SET_ID,
   kitKey: process.env.KIT_KEY,
+  privyAppId: process.env.PRIVY_APP_ID,
+  privyAppSecret: process.env.PRIVY_APP_SECRET,
+  privyJwtVerificationKey: process.env.PRIVY_JWT_VERIFICATION_KEY,
+  xaiApiKey: process.env.XAI_API_KEY,
+  xaiModel: process.env.XAI_MODEL?.trim() || "grok-4.3",
   /**
    * CORS origins: comma-separated list, e.g.
    * https://coretta.app,https://www.coretta.app

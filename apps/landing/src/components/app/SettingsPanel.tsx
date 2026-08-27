@@ -1,17 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Wallet, RefreshCw, AlertTriangle } from "lucide-react";
+import { Wallet, AlertTriangle, LogOut } from "lucide-react";
+import { usePrivy } from "@privy-io/react-auth";
 import { useAccount, useDisconnect } from "wagmi";
 import { useProfile } from "@/hooks/useProfile";
 import { useWalletSession } from "@/hooks/useWalletSession";
+import { clearApiToken } from "@/lib/api";
 import { useI18n } from "@/lib/i18n/context";
 import { LOCALES } from "@/lib/i18n/translations";
 import { AGENT_NAME } from "@/lib/brand";
 import { Button } from "@/components/ui/button";
+import DamianMemorySettings from "./DamianMemorySettings";
 import { fadeUpItem, staggerContainer } from "@/lib/motion";
-import WalletReplaceModal from "./WalletReplaceModal";
+import {
+  getDeveloperDiagnosticsEnabled,
+  setDeveloperDiagnosticsEnabled,
+} from "@/lib/developer-diagnostics";
 
 interface Props {
   onConnectWallet: () => void;
@@ -19,30 +25,118 @@ interface Props {
 
 export default function SettingsPanel({ onConnectWallet }: Props) {
   const { t, locale, setLocale } = useI18n();
-  const { profile, setPreferredName } = useProfile();
+  const { profile, setPreferredName, linkEmail, signOutEmail } = useProfile();
   const { address, isConnected, connector } = useAccount();
   const { disconnect } = useDisconnect();
+  const {
+    ready: privyReady,
+    authenticated: privyAuthenticated,
+    user: privyUser,
+    logout: logoutPrivy,
+  } = usePrivy();
   const {
     boundWallet,
     smartWalletAddress,
     smartWalletActive,
     isBoundMismatch,
-    syncBindings,
+    requiresWalletSignature,
   } = useWalletSession();
   const [activeTab, setActiveTab] = useState<"general" | "networks">("general");
   const [nickname, setNickname] = useState(profile.preferredName);
-  const [replaceOpen, setReplaceOpen] = useState(false);
+  const [editingName, setEditingName] = useState(!profile.preferredName);
+  const [nameSavePending, setNameSavePending] = useState(false);
+  const [nameSaveError, setNameSaveError] = useState<string | null>(null);
+  const [emailLogoutPending, setEmailLogoutPending] = useState(false);
+  const [emailLogoutError, setEmailLogoutError] = useState<string | null>(null);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
 
   const [settlementPref, setSettlementPref] = useState("arc");
-  const [feeAssetPref, setFeeAssetPref] = useState("sponsored");
+  const [feeAssetPref, setFeeAssetPref] = useState("usdc");
   const [advancedShowRoutes, setAdvancedShowRoutes] = useState(true);
   const [advancedShowBundler, setAdvancedShowBundler] = useState(false);
   const [advancedShowUsage, setAdvancedShowUsage] = useState(true);
   const [advancedShowSmartAddr, setAdvancedShowSmartAddr] = useState(true);
   const [advancedDevDiag, setAdvancedDevDiag] = useState(false);
 
-  const saveName = () => {
-    if (nickname.trim()) setPreferredName(nickname.trim());
+  const privyEmail = privyUser?.email?.address ?? null;
+  const emailSessionActive = privyReady && privyAuthenticated && Boolean(privyEmail);
+
+  useEffect(() => {
+    if (emailSessionActive && privyEmail && profile.linkedEmail !== privyEmail) {
+      linkEmail(privyEmail);
+    }
+  }, [emailSessionActive, linkEmail, privyEmail, profile.linkedEmail]);
+
+  useEffect(() => {
+    setAdvancedDevDiag(getDeveloperDiagnosticsEnabled());
+  }, []);
+
+  useEffect(() => {
+    setNickname(profile.preferredName);
+    setEditingName(!profile.preferredName);
+  }, [profile.preferredName]);
+
+  useEffect(() => {
+    if (profile.preferredName && !profile.canEditPreferredName) {
+      setNickname(profile.preferredName);
+      setEditingName(false);
+    }
+  }, [profile.canEditPreferredName, profile.preferredName]);
+
+  useEffect(() => {
+    if (!logoutConfirmOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !emailLogoutPending) {
+        setLogoutConfirmOpen(false);
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [emailLogoutPending, logoutConfirmOpen]);
+
+  const updateDeveloperDiagnostics = (enabled: boolean) => {
+    setAdvancedDevDiag(enabled);
+    setDeveloperDiagnosticsEnabled(enabled);
+  };
+
+  const saveName = async () => {
+    if (!nickname.trim() || nameSavePending) return;
+    setNameSavePending(true);
+    setNameSaveError(null);
+    try {
+      await setPreferredName(nickname);
+      setEditingName(false);
+    } catch (error) {
+      setNameSaveError(
+        error instanceof Error ? error.message : "Coretta could not save that name.",
+      );
+    } finally {
+      setNameSavePending(false);
+    }
+  };
+
+  const hasSavedName = Boolean(profile.preferredName.trim());
+  const nextNameEditLabel = profile.nextPreferredNameEditAt
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(
+        new Date(profile.nextPreferredNameEditAt),
+      )
+    : null;
+
+  const logoutEmail = async () => {
+    setEmailLogoutPending(true);
+    setEmailLogoutError(null);
+    try {
+      await logoutPrivy();
+      if (!isConnected) {
+        clearApiToken();
+        signOutEmail();
+      }
+      setLogoutConfirmOpen(false);
+    } catch {
+      setEmailLogoutError("Coretta could not log out the email session. Please try again.");
+    } finally {
+      setEmailLogoutPending(false);
+    }
   };
 
   return (
@@ -90,7 +184,7 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
             <SettingsCard title="Settlement Preference" variants={fadeUpItem}>
               <div className="space-y-2 text-sm text-black/80">
                 {[
-                  { id: "arc", label: "Arc (default, instant, zero gas)" },
+                  { id: "arc", label: "Arc (default, USDC gas)" },
                   { id: "auto", label: "Automatic (optimal routing)" },
                   { id: "ethereum", label: "Ethereum Sepolia (unsupported)" },
                   { id: "base", label: "Base Sepolia (unsupported)" },
@@ -119,8 +213,7 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
             <SettingsCard title="Fee Asset Preference" variants={fadeUpItem}>
               <div className="space-y-2 text-sm text-black/80">
                 {[
-                  { id: "sponsored", label: "Sponsored (Circle Paymaster zero gas)" },
-                  { id: "usdc", label: "USDC" },
+                  { id: "usdc", label: "USDC network fees (Circle Paymaster)" },
                   { id: "eurc", label: "EURC" },
                   { id: "auto", label: "Automatic" },
                 ].map((item) => (
@@ -144,9 +237,9 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
                 {[
                   { id: "routes", label: "Show Transaction Routes", val: advancedShowRoutes, set: setAdvancedShowRoutes },
                   { id: "bundler", label: "Show Bundler Details", val: advancedShowBundler, set: setAdvancedShowBundler },
-                  { id: "usage", label: "Show Sponsorship Usage", val: advancedShowUsage, set: setAdvancedShowUsage },
+                  { id: "usage", label: "Show Transfer Usage", val: advancedShowUsage, set: setAdvancedShowUsage },
                   { id: "smartAddr", label: "Show Smart Wallet Address", val: advancedShowSmartAddr, set: setAdvancedShowSmartAddr },
-                  { id: "devDiag", label: "Developer Diagnostics", val: advancedDevDiag, set: setAdvancedDevDiag },
+                  { id: "devDiag", label: "Developer Diagnostics", val: advancedDevDiag, set: updateDeveloperDiagnostics },
                 ].map((item) => (
                   <label key={item.id} className="flex cursor-pointer items-center justify-between py-1">
                     <span>{item.label}</span>
@@ -170,14 +263,54 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <label className="text-xs text-black/50">{t("preferredName")}</label>
-                  <input
-                    value={nickname}
-                    onChange={(e) => setNickname(e.target.value)}
-                    onBlur={saveName}
-                    className="mt-1 w-full rounded-xl border border-black/10 bg-[#F5F5F5] px-3 py-2 text-sm text-black outline-none focus:border-black/30"
-                  />
+                  <div className="mt-1 flex items-center gap-2">
+                    <input
+                      value={nickname}
+                      onChange={(e) => setNickname(e.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && editingName) void saveName();
+                      }}
+                      maxLength={40}
+                      readOnly={!editingName}
+                      className="min-w-0 flex-1 rounded-xl border border-black/10 bg-[#F5F5F5] px-3 py-2 text-sm text-black outline-none focus:border-black/30 read-only:text-black/60"
+                    />
+                    {hasSavedName && !editingName ? (
+                      <Button
+                        variant="glass"
+                        size="sm"
+                        disabled={!profile.canEditPreferredName}
+                        onClick={() => {
+                          setNameSaveError(null);
+                          setEditingName(true);
+                        }}
+                      >
+                        Edit
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={!nickname.trim() || nameSavePending}
+                        onClick={() => void saveName()}
+                      >
+                        {nameSavePending ? "Saving..." : "Save"}
+                      </Button>
+                    )}
+                  </div>
+                  {hasSavedName && !profile.canEditPreferredName && nextNameEditLabel ? (
+                    <p className="mt-2 text-[10px] text-black/45">
+                      You can edit this name again on {nextNameEditLabel}.
+                    </p>
+                  ) : null}
+                  {nameSaveError ? (
+                    <p className="mt-2 text-xs text-rose-700">{nameSaveError}</p>
+                  ) : null}
                 </div>
               </div>
+            </SettingsCard>
+
+            <SettingsCard title="Chat Memory" variants={fadeUpItem}>
+              <DamianMemorySettings />
             </SettingsCard>
 
             <SettingsCard title="Wallet management" variants={fadeUpItem}>
@@ -229,33 +362,70 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
                   <Button variant="ghost" size="sm" className="w-full" onClick={onConnectWallet}>
                     Switch wallet
                   </Button>
-                  <Button
-                    variant="glass"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => setReplaceOpen(true)}
-                  >
-                    <RefreshCw className="mr-2 h-3.5 w-3.5" />
-                    Replace wallet
-                  </Button>
+                  <p className="text-[10px] text-black/40">
+                    To replace the bound wallet, disconnect it and connect the new wallet.
+                  </p>
                 </div>
               ) : (
                 <div className="space-y-3">
+                  {emailSessionActive && smartWalletActive && smartWalletAddress && (
+                    <p className="text-xs text-black/50">
+                      Smart Wallet:{" "}
+                      <span className="font-mono text-black">
+                        {smartWalletAddress.slice(0, 8)}…{smartWalletAddress.slice(-6)}
+                      </span>
+                    </p>
+                  )}
                   <Button variant="primary" onClick={onConnectWallet}>
                     Connect wallet
                   </Button>
                   <p className="text-[10px] text-black/40">
-                    Wallet connection is the only authentication method right now.
+                    {emailSessionActive && requiresWalletSignature === false
+                      ? "Your Privy email session uses the managed smart wallet without external wallet approval signatures."
+                      : emailSessionActive
+                        ? "Your Privy email is signed in. Reconnect the linked wallet to approve remittances and swaps."
+                        : "Connect a wallet to approve remittances and swaps."}
                   </p>
                 </div>
               )}
             </SettingsCard>
 
             <SettingsCard title="Authentication" variants={fadeUpItem}>
-              <p className="text-xs leading-relaxed text-black/55">
-                Email login and OTP are temporarily disabled. Connect an EVM wallet, verify ownership,
-                and use your bound smart wallet for remittance and swaps.
-              </p>
+              <div className="space-y-3">
+                <p className="text-xs leading-relaxed text-black/55">
+                  {!privyReady
+                    ? "Checking email authentication..."
+                    : emailSessionActive && privyEmail
+                      ? `Signed in with email: ${privyEmail}`
+                      : profile.linkedEmail
+                        ? `Linked email: ${profile.linkedEmail}. The email session is signed out.`
+                        : "Email login and wallet connection are available from the same sign-in window."}
+                </p>
+                {emailLogoutError && (
+                  <p className="rounded-xl border border-rose-500/30 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                    {emailLogoutError}
+                  </p>
+                )}
+                {emailSessionActive ? (
+                  <Button
+                    variant="glass"
+                    size="sm"
+                    className="w-full border-rose-300 bg-rose-50 text-rose-700 hover:border-rose-400 hover:bg-rose-100 focus-visible:outline-rose-500/50"
+                    disabled={emailLogoutPending}
+                    onClick={() => {
+                      setEmailLogoutError(null);
+                      setLogoutConfirmOpen(true);
+                    }}
+                  >
+                    <LogOut className="mr-2 h-4 w-4" />
+                    {emailLogoutPending ? "Logging out..." : "Log out"}
+                  </Button>
+                ) : privyReady ? (
+                  <Button variant="glass" size="sm" className="w-full" onClick={onConnectWallet}>
+                    Open login options
+                  </Button>
+                ) : null}
+              </div>
             </SettingsCard>
 
             <SettingsCard title={t("language")} variants={fadeUpItem}>
@@ -274,14 +444,59 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
           </>
         )}
       </div>
-
-      <WalletReplaceModal
-        open={replaceOpen}
-        onClose={() => setReplaceOpen(false)}
-        onConnectWallet={onConnectWallet}
-        onComplete={() => void syncBindings()}
-        currentAddress={address}
-      />
+      {logoutConfirmOpen && (
+        <div
+          className="fixed inset-0 z-[160] flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target && !emailLogoutPending) {
+              setLogoutConfirmOpen(false);
+            }
+          }}
+        >
+          <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="logout-confirmation-title"
+            initial={{ opacity: 0, y: 10, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            className="w-full max-w-sm rounded-2xl border border-rose-200 bg-white p-6 shadow-2xl"
+          >
+            <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-full border border-rose-200 bg-rose-50 text-rose-700">
+              <LogOut className="h-4 w-4" />
+            </div>
+            <h2 id="logout-confirmation-title" className="text-lg font-semibold text-black">
+              Are you sure you want to log out?
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-black/55">
+              You will need to sign in again to access this Coretta account.
+            </p>
+            {emailLogoutError && (
+              <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {emailLogoutError}
+              </p>
+            )}
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button
+                variant="glass"
+                size="sm"
+                disabled={emailLogoutPending}
+                onClick={() => setLogoutConfirmOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="bg-rose-600 text-white hover:bg-rose-700 focus-visible:outline-rose-500/60"
+                disabled={emailLogoutPending}
+                onClick={() => void logoutEmail()}
+              >
+                <LogOut className="h-4 w-4" />
+                {emailLogoutPending ? "Logging out..." : "Yes, log out"}
+              </Button>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </motion.div>
   );
 }

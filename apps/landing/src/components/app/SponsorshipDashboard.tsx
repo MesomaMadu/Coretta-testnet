@@ -56,6 +56,9 @@ export default function SponsorshipDashboard() {
     usageMetrics,
     refreshUsage,
     verifyError,
+    emailAuthenticated,
+    emailAddress,
+    identityConnected,
   } = useWalletSession();
   const [metrics, setMetrics] = useState<UserUsageMetrics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,68 +76,90 @@ export default function SponsorshipDashboard() {
       if (showLoading) setLoading(true);
       setError(null);
 
-      if (!isConnected || !address) {
+      if (!identityConnected) {
         setMetrics(null);
-        setError("Connect a wallet to view live usage for that address.");
+        setError("Sign in with Privy email or connect a wallet to view live usage.");
         setLoading(false);
         return;
       }
 
-      if (!verified || !getApiToken()) {
+      if ((!emailAuthenticated && !verified) || !getApiToken()) {
         setMetrics(null);
-        setError("Verify wallet ownership to enable live usage tracking.");
+        setError(
+          emailAuthenticated
+            ? "Your Coretta session has expired. Sign in with Privy again."
+            : "Verify wallet ownership to enable live usage tracking.",
+        );
         setLoading(false);
         return;
       }
 
       try {
-        const data = await refreshUsage(address);
+        const data = await refreshUsage(
+          isConnected && verified && address ? address : null,
+        );
         if (data) {
           setMetrics(data);
           setLastFetchedAt(Date.now());
           setError(null);
         } else if (showLoading) {
-          setError("Failed to load live usage for this wallet.");
+          setError("Failed to load live usage for this account.");
         }
       } catch (err) {
         if (showLoading) {
           setError(
             err instanceof Error
               ? err.message
-              : "Failed to load live usage for this wallet.",
+              : "Failed to load live usage for this account.",
           );
         }
       } finally {
         setLoading(false);
       }
     },
-    [address, isConnected, verified, refreshUsage],
+    [
+      address,
+      emailAuthenticated,
+      identityConnected,
+      isConnected,
+      refreshUsage,
+      verified,
+    ],
   );
 
   useEffect(() => {
     void fetchMetrics(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount / wallet change only
-  }, [isConnected, address, verified]);
+  }, [identityConnected, isConnected, address, verified, emailAuthenticated]);
 
   // Prefer live metrics from the shared session hook (poll + settle refresh).
   useEffect(() => {
     if (
-      usageMetrics?.walletAddress &&
-      address &&
-      usageMetrics.walletAddress.toLowerCase() === address.toLowerCase()
+      usageMetrics &&
+      (emailAuthenticated ||
+        (usageMetrics.walletAddress &&
+          address &&
+          usageMetrics.walletAddress.toLowerCase() === address.toLowerCase()))
     ) {
       setMetrics(usageMetrics);
       setLastFetchedAt(Date.now());
       setError(null);
       setLoading(false);
     }
-  }, [usageMetrics, address]);
+  }, [usageMetrics, address, emailAuthenticated]);
 
   useEffect(() => {
     const onUsage = (e: Event) => {
       const detail = (e as CustomEvent<UserUsageMetrics>).detail;
-      if (!detail?.walletAddress || !address) return;
-      if (detail.walletAddress.toLowerCase() !== address.toLowerCase()) return;
+      if (!detail) return;
+      if (
+        !emailAuthenticated &&
+        (!detail.walletAddress ||
+          !address ||
+          detail.walletAddress.toLowerCase() !== address.toLowerCase())
+      ) {
+        return;
+      }
       setMetrics(detail);
       setLastFetchedAt(Date.now());
       setError(null);
@@ -142,7 +167,7 @@ export default function SponsorshipDashboard() {
     };
     window.addEventListener("coretta-usage-updated", onUsage);
     return () => window.removeEventListener("coretta-usage-updated", onUsage);
-  }, [address]);
+  }, [address, emailAuthenticated]);
 
   if (loading && !metrics) {
     return (
@@ -157,17 +182,19 @@ export default function SponsorshipDashboard() {
       <div className="flex h-full flex-col items-center justify-center gap-4 bg-[#F5F5F5] p-8 text-center">
         <Wallet className="h-8 w-8 text-[#0A0A0A]" />
         <div>
-          <h1 className="text-lg font-semibold text-black">Live wallet usage</h1>
+          <h1 className="text-lg font-semibold text-black">Live account usage</h1>
           <p className="mt-2 max-w-sm text-sm text-black/50">
-            {error ?? "No live metrics yet for this wallet."}
+            {error ?? "No live metrics yet for this account."}
           </p>
-          {address && (
+          {emailAuthenticated && emailAddress ? (
+            <p className="mt-2 text-xs text-black/50">{emailAddress}</p>
+          ) : address ? (
             <p className="mt-2 font-mono text-xs text-black/40">
               {address.slice(0, 6)}…{address.slice(-4)}
             </p>
-          )}
+          ) : null}
         </div>
-        {isConnected && !verified && (
+        {isConnected && !emailAuthenticated && !verified && (
           <div className="flex flex-col items-center gap-2">
             {verifyError && (
               <p className="max-w-sm text-xs text-amber-800">{verifyError}</p>
@@ -181,7 +208,7 @@ export default function SponsorshipDashboard() {
             </Button>
           </div>
         )}
-        {isConnected && verified && (
+        {identityConnected && (emailAuthenticated || verified) && (
           <Button variant="glass" onClick={() => void fetchMetrics(true)}>
             Retry
           </Button>
@@ -212,12 +239,15 @@ export default function SponsorshipDashboard() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-black">
-              Usage & Sponsorship
+              Usage & Limits
             </h1>
             <p className="subheading-text mt-1 text-sm text-black/50">
-              Live counters for the connected wallet — updates on each sponsored
-              remit/swap and while this session is open.
+              Live counters for the signed-in account. They update on each
+              remit or swap and while this session is open.
             </p>
+            {emailAuthenticated && emailAddress && (
+              <p className="mt-1 text-xs text-black/50">Privy email · {emailAddress}</p>
+            )}
             {metrics.walletAddress && (
               <p className="mt-1 font-mono text-xs text-[#0A0A0A]">
                 {metrics.walletAddress.slice(0, 8)}…{metrics.walletAddress.slice(-6)}
@@ -251,7 +281,7 @@ export default function SponsorshipDashboard() {
           className="rounded-2xl border border-black/10 bg-white p-6 shadow-sm"
         >
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-black">Daily Sponsorship Allowance</h2>
+            <h2 className="text-sm font-semibold text-black">Daily Transfer Allowance</h2>
             <span className="flex items-center gap-1 text-xs text-black/50">
               <Clock className="h-3.5 w-3.5 text-[#0A0A0A]" /> Resets in{" "}
               {formatTimer(metrics.resetInSeconds)}
@@ -263,7 +293,7 @@ export default function SponsorshipDashboard() {
               ${metrics.sponsoredUsdSpent.toFixed(2)}
             </span>
             <span className="text-xs text-black/50">
-              / ${metrics.sponsoredUsdLimit} Sponsored
+              / ${metrics.sponsoredUsdLimit} volume
             </span>
           </div>
 
@@ -280,7 +310,7 @@ export default function SponsorshipDashboard() {
         <motion.div variants={fadeUpItem} className="grid gap-4 sm:grid-cols-2">
           <QuotaCard
             icon={Zap}
-            title="Transactions Sponsored"
+            title="Transactions"
             current={metrics.sponsoredTxCount}
             limit={metrics.sponsoredTxLimit}
           />

@@ -16,8 +16,8 @@ const PILLARS = [
   },
   {
     icon: Zap,
-    title: "Gasless on Arc",
-    body: "Circle Paymaster sponsors gas in USDC. Smart wallets and bundlers stay invisible to senders and receivers.",
+    title: "USDC gas on Arc",
+    body: "Circle Paymaster lets compatible smart wallets pay gas in USDC. Smart wallets and bundlers stay out of the user's way.",
   },
 ];
 

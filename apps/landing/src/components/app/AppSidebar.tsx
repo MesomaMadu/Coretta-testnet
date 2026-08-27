@@ -3,11 +3,11 @@
 import Link from "next/link";
 import { useState } from "react";
 import {
-  Home,
+  LayoutDashboard,
   MessageSquare,
-  History,
   Settings,
   Wallet,
+  Mail,
   Copy,
   Check,
   PanelLeftClose,
@@ -15,37 +15,38 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import CRLogo from "@/components/shared/CRLogo";
-import { AGENT_NAME, BRAND_NAME } from "@/lib/brand";
+import { BRAND_NAME } from "@/lib/brand";
 
 interface Props {
   active?: string;
-  onActivityClick: () => void;
+  onDashboardClick: () => void;
   onSettingsClick: () => void;
   onUsageClick: () => void;
   onChatClick: () => void;
   onConnectWallet: () => void;
   connected: boolean;
   address?: string;
+  email?: string | null;
 }
 
 const NAV = [
-  { id: "home", label: "Home", icon: Home, href: "/" as const, type: "link" as const },
-  { id: "chat", label: AGENT_NAME, icon: MessageSquare, type: "button" as const },
-  { id: "history", label: "Activity", icon: History, type: "button" as const },
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, type: "button" as const },
+  { id: "chat", label: "Chat", icon: MessageSquare, type: "button" as const },
   { id: "usage", label: "Usage", icon: Wallet, type: "button" as const },
   { id: "settings", label: "Settings", icon: Settings, type: "button" as const },
 ] as const;
 
 /** Light fintech sidebar — matches landing Halo shell + Coretta CR logo */
 export default function AppSidebar({
-  active = "chat",
-  onActivityClick,
+  active = "dashboard",
+  onDashboardClick,
   onSettingsClick,
   onUsageClick,
   onChatClick,
   onConnectWallet,
   connected,
   address,
+  email,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -118,29 +119,16 @@ export default function AppSidebar({
             </>
           );
 
-          if (item.type === "link") {
-            return (
-              <Link
-                key={item.id}
-                href={item.href}
-                className={className}
-                title={collapsed ? item.label : undefined}
-              >
-                {inner}
-              </Link>
-            );
-          }
-
           const onClick =
-            item.id === "history"
-              ? onActivityClick
+            item.id === "dashboard"
+              ? onDashboardClick
               : item.id === "settings"
-                ? onSettingsClick
-                : item.id === "usage"
-                  ? onUsageClick
-                  : item.id === "chat"
-                    ? onChatClick
-                    : undefined;
+                  ? onSettingsClick
+                  : item.id === "usage"
+                    ? onUsageClick
+                    : item.id === "chat"
+                      ? onChatClick
+                      : undefined;
 
           return (
             <button
@@ -158,6 +146,17 @@ export default function AppSidebar({
       </nav>
 
       <div className="mt-auto space-y-2 border-t border-black/10 pt-4">
+        <Link
+          href="/"
+          className={cn(
+            "flex w-full items-center gap-3 rounded-full px-3 py-2.5 text-sm font-medium text-gray-700 transition-colors duration-200 hover:bg-black/5 hover:text-black",
+            collapsed && "justify-center px-0",
+          )}
+          title={collapsed ? "Back to home" : undefined}
+        >
+          <span className="shrink-0 text-base leading-none">↗</span>
+          {!collapsed && <span>Back to home</span>}
+        </Link>
         <div
           className={cn(
             "group flex w-full items-center gap-2 rounded-full border border-black/10 bg-[#F5F5F5] text-left text-xs text-black",
@@ -173,23 +172,30 @@ export default function AppSidebar({
             )}
             title={
               collapsed
-                ? connected && address
-                  ? `${address.slice(0, 6)}…${address.slice(-4)}`
-                  : "Connect wallet"
+                ? email ||
+                  (connected && address
+                    ? `${address.slice(0, 6)}…${address.slice(-4)}`
+                    : "Log in or connect")
                 : undefined
             }
           >
-            <Wallet className="h-4 w-4 shrink-0 text-black" />
+            {email ? (
+              <Mail className="h-4 w-4 shrink-0 text-black" />
+            ) : (
+              <Wallet className="h-4 w-4 shrink-0 text-black" />
+            )}
             {!collapsed &&
-              (connected && address ? (
+              (email ? (
+                <span className="truncate">{email}</span>
+              ) : connected && address ? (
                 <span className="truncate font-mono">
                   {address.slice(0, 6)}…{address.slice(-4)}
                 </span>
               ) : (
-                "Connect wallet"
+                "Log in or connect"
               ))}
           </button>
-          {!collapsed && connected && address && (
+          {!collapsed && !email && connected && address && (
             <button
               type="button"
               onClick={() => void copyAddress()}
@@ -206,7 +212,7 @@ export default function AppSidebar({
         </div>
         {!collapsed && (
           <p className="px-1 text-[10px] leading-relaxed text-black/45">
-            Wallet only · Arc Testnet
+            {email ? "Privy email · Arc Testnet" : "Wallet or email · Arc Testnet"}
           </p>
         )}
       </div>

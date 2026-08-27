@@ -1,27 +1,51 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { usePrivy } from "@privy-io/react-auth";
 import { useConnect, useAccount, useDisconnect } from "wagmi";
-import { X, Wallet, ExternalLink, ShieldCheck } from "lucide-react";
+import { X, Wallet, ExternalLink, ShieldCheck, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { arcTestnet } from "@/lib/chains";
 import { useEip6963 } from "@/hooks/useEip6963";
+import { EmailAuthPanel } from "./EmailAuthModal";
 
 interface Props {
   open: boolean;
   onClose: () => void;
+  emailEnabled?: boolean;
+  onEmailSuccess?: (email: string) => void;
 }
 
-export default function WalletConnectModal({ open, onClose }: Props) {
+export default function WalletConnectModal({
+  open,
+  onClose,
+  emailEnabled = false,
+  onEmailSuccess,
+}: Props) {
   const { connect, connectors, isPending } = useConnect();
   const { address, isConnected, chain } = useAccount();
   const { disconnect } = useDisconnect();
+  const {
+    ready: privyReady,
+    authenticated: privyAuthenticated,
+    user: privyUser,
+  } = usePrivy();
   const { supportedWallets, installedWallets } = useEip6963();
+  const [view, setView] = useState<"options" | "email">("options");
+
+  useEffect(() => {
+    if (!open) setView("options");
+  }, [open]);
 
   if (!open) return null;
 
   const injected = connectors.find((c) => c.id === "injected");
   const wc = connectors.find((c) => c.id === "walletConnect");
   const wrongChain = isConnected && chain?.id !== arcTestnet.id;
+  const privyEmail =
+    privyReady && privyAuthenticated ? (privyUser?.email?.address ?? null) : null;
+  const emailSessionActive = Boolean(privyEmail);
+  const signedIn = isConnected || (privyReady && privyAuthenticated);
 
   const hasInstalled = installedWallets.length > 0;
 
@@ -34,7 +58,13 @@ export default function WalletConnectModal({ open, onClose }: Props) {
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 id="wallet-modal-title" className="text-lg font-semibold text-black">
-            Connect Wallet
+            {view === "email"
+              ? isConnected
+                ? "Link email"
+                : "Continue with email"
+              : signedIn
+                ? "Your account"
+                : "Log in or sign up"}
           </h2>
           <button
             type="button"
@@ -45,6 +75,48 @@ export default function WalletConnectModal({ open, onClose }: Props) {
             <X className="h-5 w-5" />
           </button>
         </div>
+
+        {view === "email" ? (
+          <EmailAuthPanel
+            onCancel={() => setView("options")}
+            onSuccess={(email) => {
+              onEmailSuccess?.(email);
+              onClose();
+            }}
+          />
+        ) : (
+          <>
+            <p className="mb-5 text-sm leading-relaxed text-black/55">
+              {emailSessionActive
+                ? "Your Privy email session is active. You can also connect a wallet."
+                : isConnected
+                  ? "Manage your connected wallet or link an email to this account."
+                  : signedIn
+                    ? "Manage your signed-in account or connect a wallet."
+                    : "Log in or sign up with email, or connect a wallet."}
+            </p>
+
+            {emailSessionActive && privyEmail && (
+              <div className="mb-4 rounded-xl border border-black/10 bg-[#F5F5F5] p-4">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-full bg-black p-2 text-white">
+                    <Mail className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-semibold text-black">Signed in with Privy</p>
+                      <ShieldCheck className="h-4 w-4 text-black" />
+                    </div>
+                    <p className="mt-0.5 truncate text-sm text-black/65" title={privyEmail}>
+                      {privyEmail}
+                    </p>
+                    <p className="mt-1 text-[10px] font-medium uppercase tracking-wider text-black/40">
+                      Email sign-up and login
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
         {isConnected && address ? (
           <div className="space-y-4">
@@ -59,12 +131,48 @@ export default function WalletConnectModal({ open, onClose }: Props) {
                 Please switch to Arc Testnet (chain {arcTestnet.id}) in your wallet.
               </p>
             )}
+            {emailEnabled && !emailSessionActive && (
+              <Button variant="primary" className="w-full" onClick={() => setView("email")}>
+                <Mail className="mr-2 h-4 w-4" />
+                Link email to this wallet
+              </Button>
+            )}
             <Button variant="glass" className="w-full" onClick={() => disconnect()}>
               Disconnect
             </Button>
           </div>
         ) : (
           <div className="space-y-5">
+            {emailEnabled && !emailSessionActive && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setView("email")}
+                  className="flex w-full items-center justify-between rounded-xl border border-black bg-black px-4 py-3 text-left text-white transition hover:bg-black/85"
+                >
+                  <div className="flex items-center gap-3">
+                    <Mail className="h-5 w-5" />
+                    <div>
+                      <p className="font-medium">Continue with email</p>
+                      <p className="text-xs text-white/60">Secure one-time code by Privy</p>
+                    </div>
+                  </div>
+                  <ShieldCheck className="h-4 w-4" />
+                </button>
+                <div className="flex items-center gap-3 text-[10px] font-medium uppercase tracking-wider text-black/35">
+                  <span className="h-px flex-1 bg-black/10" />
+                  Or connect a wallet
+                  <span className="h-px flex-1 bg-black/10" />
+                </div>
+              </>
+            )}
+            {emailSessionActive && (
+              <div className="flex items-center gap-3 text-[10px] font-medium uppercase tracking-wider text-black/35">
+                <span className="h-px flex-1 bg-black/10" />
+                Connect a wallet
+                <span className="h-px flex-1 bg-black/10" />
+              </div>
+            )}
             <div>
               <p className="mb-2 text-xs font-medium uppercase tracking-wider text-black/40">
                 1. Browser Wallets
@@ -173,6 +281,8 @@ export default function WalletConnectModal({ open, onClose }: Props) {
               </div>
             )}
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

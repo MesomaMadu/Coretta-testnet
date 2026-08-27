@@ -4,7 +4,6 @@ import cors from "@fastify/cors";
 import { config } from "./config.js";
 import { registerRoutes } from "./routes/index.js";
 import { log } from "./lib/log.js";
-import { resetAndDeployAllCircleScas } from "./services/wallet.js";
 
 const app = Fastify({ logger: true });
 
@@ -51,21 +50,4 @@ app.listen({ port: config.port, host: "0.0.0.0" }, (err, addr) => {
     hasCircle: Boolean(config.circleApiKey),
   });
 
-  // Full reset of Circle SCA deploy flags, then deploy all existing SCAs on-chain.
-  // Requires funded SCAs (USDC gas on Arc). Failures are logged; wallets stay usable once funded.
-  if (config.circleApiKey && config.circleEntitySecret && config.circleWalletSetId) {
-    void resetAndDeployAllCircleScas()
-      .then((summary) => {
-        log.info("api", "Circle SCA reset+deploy finished", {
-          total: summary.total,
-          deployed: summary.deployed,
-          failed: summary.failed,
-        });
-      })
-      .catch((e) => {
-        log.error("api", "Circle SCA reset+deploy failed", {
-          message: e instanceof Error ? e.message : String(e),
-        });
-      });
-  }
 });

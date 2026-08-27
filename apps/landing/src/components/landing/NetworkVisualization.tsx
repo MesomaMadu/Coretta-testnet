@@ -224,7 +224,7 @@ export default function NetworkVisualization() {
       id="network"
       eyebrow="Arc architecture"
       title="USDC-native settlement on Arc"
-      subtitle="ERC-4337 smart wallets, Circle Paymaster sponsorship, Pimlico bundler execution, and sub-second finality on Arc Testnet (chain 5042002) — fees paid in USDC."
+      subtitle="ERC-4337 smart wallets, Circle Paymaster USDC fees, Pimlico bundler execution, and sub-second finality on Arc Testnet (chain 5042002)."
     >
       <motion.div
         ref={ref}

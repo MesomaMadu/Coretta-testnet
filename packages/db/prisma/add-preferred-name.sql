@@ -1,0 +1,3 @@
+ALTER TABLE "User"
+ADD COLUMN IF NOT EXISTS "preferredName" TEXT,
+ADD COLUMN IF NOT EXISTS "preferredNameUpdatedAt" TIMESTAMP(3);

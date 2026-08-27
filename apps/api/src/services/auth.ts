@@ -8,14 +8,22 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export async function loginWithIdentity(type: IdentityType, value: string) {
   const user = await provisionUserWithWallet(type, value);
+  return createSessionForUser(user.id);
+}
+
+export async function createSessionForUser(userId: string) {
   const token = randomBytes(32).toString("base64url");
   const tokenHash = hashSessionToken(token);
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
 
   await prisma.session.create({
-    data: { userId: user.id, tokenHash, expiresAt },
+    data: { userId, tokenHash, expiresAt },
   });
 
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: userId },
+    include: { wallets: true, limits: true, identities: true },
+  });
   return { token, user, expiresAt };
 }
 

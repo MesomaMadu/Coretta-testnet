@@ -18,10 +18,10 @@ const LAYERS = [
   },
   {
     id: "gas",
-    label: "Gas Sponsorship Layer",
+    label: "USDC Fee Layer",
     icon: Shield,
-    tagline: "Coretta sponsors gas automatically.",
-    points: ["Circle Paymaster", "USDC fee abstraction", "Validation before execution", "Users pay zero gas"],
+    tagline: "Compatible smart accounts pay gas in USDC.",
+    points: ["Circle Paymaster", "USDC fee abstraction", "Validation before execution", "No native ETH needed"],
     color: "from-violet-500/20 to-violet-500/5",
     border: "border-violet-400/30",
   },

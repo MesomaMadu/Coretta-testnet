@@ -6,7 +6,7 @@ import { Check, Shield, Zap } from "lucide-react";
 
 const STEPS = [
   { id: 0, label: "Send initiated", icon: Zap },
-  { id: 1, label: "Gas sponsored", icon: Shield },
+  { id: 1, label: "Gas paid in USDC", icon: Shield },
   { id: 2, label: "Settled on Arc", icon: Zap },
   { id: 3, label: "Funds received", icon: Check },
 ] as const;

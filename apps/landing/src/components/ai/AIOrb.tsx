@@ -7,6 +7,7 @@ interface AIOrbProps {
   active?: boolean;
   size?: "sm" | "md" | "lg";
   className?: string;
+  animation?: "liquid" | "pulse";
 }
 
 /** Pixel sizes for the water-drop mark only (Damian logo section). */
@@ -19,8 +20,14 @@ const DROP_PATH =
  * Damian logo: black water-drop with a soft liquid pulse.
  * Animation is confined to this mark (not the full chat chrome).
  */
-export default function AIOrb({ active = false, size = "md", className }: AIOrbProps) {
+export default function AIOrb({
+  active = false,
+  size = "md",
+  className,
+  animation = "liquid",
+}: AIOrbProps) {
   const px = sizes[size];
+  const pulseOnly = animation === "pulse";
 
   return (
     <div
@@ -28,25 +35,42 @@ export default function AIOrb({ active = false, size = "md", className }: AIOrbP
       style={{ width: px, height: px }}
       aria-hidden
     >
-      {/* Soft ground shadow under the drop */}
-      <motion.div
-        className="absolute bottom-0 left-1/2 h-2 w-[55%] -translate-x-1/2 rounded-full bg-black/15 blur-sm"
-        animate={{
-          scaleX: active ? [1, 1.18, 1] : [1, 1.06, 1],
-          opacity: active ? [0.3, 0.55, 0.3] : [0.22, 0.38, 0.22],
-        }}
-        transition={{ duration: active ? 1.4 : 2.6, repeat: Infinity, ease: "easeInOut" }}
-      />
+      {pulseOnly ? (
+        <motion.div
+          className="absolute inset-[18%] rounded-full bg-[#7C4DFF]/15 blur-xl"
+          animate={{
+            scale: active ? [0.9, 1.16, 0.9] : [0.94, 1.06, 0.94],
+            opacity: active ? [0.25, 0.55, 0.25] : [0.16, 0.3, 0.16],
+          }}
+          transition={{ duration: active ? 1.6 : 2.8, repeat: Infinity, ease: "easeInOut" }}
+        />
+      ) : (
+        <motion.div
+          className="absolute bottom-0 left-1/2 h-2 w-[55%] -translate-x-1/2 rounded-full bg-black/15 blur-sm"
+          animate={{
+            scaleX: active ? [1, 1.18, 1] : [1, 1.06, 1],
+            opacity: active ? [0.3, 0.55, 0.3] : [0.22, 0.38, 0.22],
+          }}
+          transition={{ duration: active ? 1.4 : 2.6, repeat: Infinity, ease: "easeInOut" }}
+        />
+      )}
 
       {/* Water drop body */}
       <motion.div
         className="relative"
         style={{ width: px * 0.72, height: px * 0.9 }}
-        animate={{
-          y: active ? [0, -7, 0, 2, 0] : [0, -3, 0],
-          scaleY: active ? [1, 1.05, 0.96, 1.02, 1] : [1, 1.025, 1],
-          scaleX: active ? [1, 0.96, 1.04, 0.99, 1] : [1, 0.99, 1],
-        }}
+        animate={
+          pulseOnly
+            ? {
+                scale: active ? [1, 1.045, 1] : [1, 1.018, 1],
+                opacity: active ? [0.92, 1, 0.92] : [0.96, 1, 0.96],
+              }
+            : {
+                y: active ? [0, -7, 0, 2, 0] : [0, -3, 0],
+                scaleY: active ? [1, 1.05, 0.96, 1.02, 1] : [1, 1.025, 1],
+                scaleX: active ? [1, 0.96, 1.04, 0.99, 1] : [1, 0.99, 1],
+              }
+        }
         transition={{
           duration: active ? 1.5 : 2.8,
           repeat: Infinity,
@@ -92,19 +116,26 @@ export default function AIOrb({ active = false, size = "md", className }: AIOrbP
           {/* Drop silhouette */}
           <path d={DROP_PATH} fill="url(#damian-drop-fill)" />
 
-          {/* Liquid fill rising and falling inside the drop */}
+          {/* Liquid motion is reserved for the landing treatment. */}
           <g clipPath="url(#damian-drop-clip)">
-            <motion.g
-              animate={{ y: active ? [14, 4, 16, 8, 14] : [16, 10, 16] }}
-              transition={{
-                duration: active ? 1.8 : 3.2,
-                repeat: Infinity,
-                ease: "easeInOut",
-              }}
-            >
-              <rect x="0" y="28" width="64" height="60" fill="#111111" />
-              <path d="M0 28 Q16 20 32 28 T64 28 V40 H0 Z" fill="#1F1F1F" />
-            </motion.g>
+            {pulseOnly ? (
+              <g>
+                <rect x="0" y="28" width="64" height="60" fill="#111111" />
+                <path d="M0 28 Q16 20 32 28 T64 28 V40 H0 Z" fill="#1F1F1F" />
+              </g>
+            ) : (
+              <motion.g
+                animate={{ y: active ? [14, 4, 16, 8, 14] : [16, 10, 16] }}
+                transition={{
+                  duration: active ? 1.8 : 3.2,
+                  repeat: Infinity,
+                  ease: "easeInOut",
+                }}
+              >
+                <rect x="0" y="28" width="64" height="60" fill="#111111" />
+                <path d="M0 28 Q16 20 32 28 T64 28 V40 H0 Z" fill="#1F1F1F" />
+              </motion.g>
+            )}
           </g>
 
           {/* Specular highlight */}
@@ -118,7 +149,7 @@ export default function AIOrb({ active = false, size = "md", className }: AIOrbP
         </svg>
 
         {/* Occasional drip bead under the tip when active */}
-        {active && (
+        {active && !pulseOnly && (
           <motion.span
             className="absolute left-1/2 top-full mt-0.5 block h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-black"
             animate={{

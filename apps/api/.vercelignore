@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.vercel
+node_modules
+dist
+recovery
+ENTITY_SECRET_BACKUP.txt
+*-recovery-file.json
+*.pem
+*.key
+*.p12
+*.pfx

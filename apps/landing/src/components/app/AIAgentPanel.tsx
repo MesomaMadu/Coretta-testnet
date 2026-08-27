@@ -1,23 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Mic, MicOff, Send, Volume2 } from "lucide-react";
+import { Mic, MicOff, Send, Square, Volume2 } from "lucide-react";
 import { useAccount, useSignMessage } from "wagmi";
 import AIOrb from "@/components/ai/AIOrb";
 import ChatBubble from "@/components/ai/ChatBubble";
 import TransactionPreviewCard from "./TransactionPreviewCard";
 import TransactionStatusCard from "./TransactionStatusCard";
 import SmartWalletActivation from "./SmartWalletActivation";
-import { SmartWalletBalanceBubble } from "./SmartWalletBalanceBubble";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useProfile } from "@/hooks/useProfile";
 import { useVoice } from "@/hooks/useVoice";
 import { useWalletSession } from "@/hooks/useWalletSession";
 import { useWalletTracking } from "@/hooks/useWalletTracking";
 import { useI18n } from "@/lib/i18n/context";
-import { AGENT_NAME, AGENT_TAGLINE } from "@/lib/brand";
+import { AGENT_NAME } from "@/lib/brand";
 import { apiFetch, getApiToken } from "@/lib/api";
-import { buildTransactionAuthMessage } from "@/lib/wallet-session";
+import {
+  ARC_TESTNET_CHAIN_ID,
+  buildTransactionAuthorizationMessage,
+  type RemitRequest,
+} from "@coretta/shared";
 import { upsertTransaction } from "@/lib/transaction-store";
 import { humanizeTxFailure, mapTransferStateToLifecycle } from "@/lib/tx-errors";
 import {
@@ -34,11 +37,9 @@ interface Props {
 export default function AIAgentPanel({ onRequestWallet }: Props) {
   const [input, setInput] = useState("");
   const [voiceDraft, setVoiceDraft] = useState<string | null>(null);
-  const [showBoundBanner, setShowBoundBanner] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const wasDisconnectedRef = useRef(false);
-  const boundBannerShownRef = useRef(false);
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, chainId } = useAccount();
   const { signMessageAsync } = useSignMessage();
   const { profile, hydrated } = useProfile();
   const { t } = useI18n();
@@ -51,9 +52,14 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
     activateSmartWallet,
     canTransact,
     isBoundMismatch,
+    smartWalletAddress,
+    emailOnlyMode,
+    identityConnected,
+    requiresWalletSignature,
     verifyError,
     refreshUsage,
   } = useWalletSession();
+  const needsWalletSignature = requiresWalletSignature !== false;
   const { track } = useWalletTracking();
 
   /** Push a single chatbot tx into the activity store (one row per txId). */
@@ -91,8 +97,12 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
   );
 
   const notifyUsageRefresh = useCallback(() => {
-    if (address) void refreshUsage(address);
-  }, [address, refreshUsage]);
+    if (emailOnlyMode) {
+      void refreshUsage(null);
+    } else if (address) {
+      void refreshUsage(address);
+    }
+  }, [address, emailOnlyMode, refreshUsage]);
 
   const greeting =
     hydrated && profile.preferredName && (isConnected || profile.linkedEmail)
@@ -139,22 +149,6 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
       new CustomEvent("coretta-session-restored", { detail: { message: greeting } }),
     );
   }, [verified, isConnected, greeting]);
-
-  // "Smart wallet bound" banner: show once per bind, auto-hide after 5s.
-  useEffect(() => {
-    if (!isConnected || !verified || !smartWalletActive || isBoundMismatch) {
-      if (!isConnected || !verified) {
-        boundBannerShownRef.current = false;
-        setShowBoundBanner(false);
-      }
-      return;
-    }
-    if (boundBannerShownRef.current) return;
-    boundBannerShownRef.current = true;
-    setShowBoundBanner(true);
-    const t = window.setTimeout(() => setShowBoundBanner(false), 5000);
-    return () => window.clearTimeout(t);
-  }, [isConnected, verified, smartWalletActive, isBoundMismatch]);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -237,7 +231,7 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
             });
           }
           if (lifecycle === "settled") {
-            completeExecution(t.txHash, txId);
+            completeExecution(t.txHash, txId, { transferId });
             notifyUsageRefresh();
           } else {
             failExecution(txId, failureReason ?? "Transfer failed.", t.txHash);
@@ -251,17 +245,17 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
   };
 
   const handleConfirm = async () => {
-    if (!isConnected || !address) {
+    if (needsWalletSignature && (!isConnected || !address)) {
       onRequestWallet();
       return;
     }
-    if (!verified) {
+    if (needsWalletSignature && !verified) {
       const ok = await verifyOwnership();
       if (!ok) return;
     }
     if (!canTransact) return;
 
-    const ok = await confirmAndSign();
+    const ok = await confirmAndSign(needsWalletSignature);
     if (!ok || !preview) return;
 
     const isSwap =
@@ -298,30 +292,12 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
       },
     });
 
-    try {
-      const authMessage = buildTransactionAuthMessage({
-        address,
-        previewHash: preview.previewHash,
-        action: preview.action,
-        amount: preview.amount,
-        asset: preview.asset,
-        recipient: preview.recipient,
-      });
-      await signMessageAsync({ message: authMessage });
-    } catch (err) {
-      const reason = humanizeTxFailure(err);
-      failExecution(txId, reason);
-      pushActivity(activityBase, { status: "failed", failureReason: reason });
-      return;
-    }
-
     markExecuting();
     setPhase("executing");
 
     const token = getApiToken();
     if (!token) {
-      const reason =
-        "Wallet session missing. Reconnect your wallet and approve the ownership signature.";
+      const reason = "Authentication session missing. Sign in again to continue.";
       failExecution(txId, reason);
       pushActivity(activityBase, { status: "failed", failureReason: reason });
       return;
@@ -332,6 +308,23 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
       const tokenIn = preview.action === "swapUSDCtoEURC" ? "USDC" : "EURC";
       const tokenOut = preview.action === "swapUSDCtoEURC" ? "EURC" : "USDC";
       try {
+        let authorization: { message: string; signature: string } | undefined;
+        if (needsWalletSignature) {
+          if (!address) throw new Error("A linked wallet is required for this swap.");
+          const message = buildTransactionAuthorizationMessage({
+            address,
+            chainId: chainId ?? ARC_TESTNET_CHAIN_ID,
+            intent: {
+              action: "swap",
+              tokenIn,
+              tokenOut,
+              amountIn: preview.amount,
+              nonce: crypto.randomUUID(),
+            },
+          });
+          const signature = await signMessageAsync({ message });
+          authorization = { message, signature };
+        }
         const res = await apiFetch<{
           ok: boolean;
           code?: string;
@@ -345,6 +338,7 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
             tokenIn,
             tokenOut,
             amountIn: preview.amount,
+            ...(authorization ? { authorization } : {}),
           }),
         });
 
@@ -381,10 +375,11 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
       }
     }
 
-    // Map "Your wallet" / bound-wallet placeholders to connected EOA for single sends.
+    // Map the account placeholder to the active external or managed smart wallet.
+    const activeWalletAddress = needsWalletSignature ? address : smartWalletAddress;
     const recipientForResolve =
-      /^your wallet$/i.test(preview.recipient.trim()) && address
-        ? address
+      /^your wallet$/i.test(preview.recipient.trim()) && activeWalletAddress
+        ? activeWalletAddress
         : preview.recipient;
 
     const built = buildRemitTargets({
@@ -408,8 +403,40 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
       return;
     }
 
+    const authorizedTargets = targets.map((target) => ({
+      target,
+      request: {
+        recipient: target.payload,
+        amount: target.amount,
+        asset: preview.asset,
+        idempotencyKey: crypto.randomUUID(),
+      } satisfies RemitRequest,
+    }));
+    let remitAuthorization: { message: string; signature: string } | undefined;
+    if (needsWalletSignature) {
+      try {
+        if (!address) throw new Error("A linked wallet is required for this remittance.");
+        const message = buildTransactionAuthorizationMessage({
+          address,
+          chainId: chainId ?? ARC_TESTNET_CHAIN_ID,
+          intent: {
+            action: "remit",
+            requests: authorizedTargets.map(({ request }) => request),
+          },
+        });
+        const signature = await signMessageAsync({ message });
+        remitAuthorization = { message, signature };
+      } catch (err) {
+        const reason = humanizeTxFailure(err);
+        failExecution(txId, reason);
+        pushActivity(activityBase, { status: "failed", failureReason: reason });
+        return;
+      }
+    }
+
     const executeOneRemit = async (
       target: RemitTarget,
+      request: RemitRequest,
       oneTxId: string,
     ): Promise<{
       ok: boolean;
@@ -448,10 +475,9 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
         }>("/v1/remit", {
           method: "POST",
           body: JSON.stringify({
-            recipient: target.payload,
-            amount: target.amount,
-            idempotencyKey: crypto.randomUUID(),
+            ...request,
             execute: true,
+            ...(remitAuthorization ? { authorization: remitAuthorization } : {}),
           }),
         });
 
@@ -579,19 +605,25 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
             /* retry poll */
           }
         }
-        const timeoutReason = "Transfer timed out waiting for confirmation.";
-        pushActivity(oneBase, { status: "failed", failureReason: timeoutReason });
+        const pendingReason =
+          "Transfer submitted. Circle confirmation is still being tracked in Activity.";
+        pushActivity(oneBase, { status: "pending" });
         updateTxCard({
           id: oneTxId,
-          status: "failed",
+          status: "pending",
           asset: preview.asset,
           amount: target.amount,
           recipient: target.label,
           network: preview.network,
           timestamp: oneBase.timestamp,
-          failureReason: timeoutReason,
         });
-        return { ok: false, reason: timeoutReason };
+        void track({
+          kind: "transfer",
+          label: pendingReason,
+          status: "pending",
+          metadata: { transferId: res.transferId, recipient: target.label },
+        });
+        return { ok: true, pending: true, transferId: res.transferId };
       } catch (err) {
         const reason = humanizeTxFailure(err);
         pushActivity(oneBase, { status: "failed", failureReason: reason });
@@ -638,7 +670,7 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
           method: "POST",
           body: JSON.stringify({
             action: "batch",
-            walletAddress: address,
+            ...(needsWalletSignature && address ? { walletAddress: address } : {}),
           }),
         });
       } catch {
@@ -646,15 +678,18 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
       }
 
       let settledCount = 0;
+      let pendingCount = 0;
       let failedCount = 0;
       let lastHash: string | undefined;
       const failures: string[] = [];
 
       for (let i = 0; i < targets.length; i++) {
-        const target = targets[i];
+        const { target, request } = authorizedTargets[i];
         const oneTxId = `${txId}_w${i + 1}`;
-        const result = await executeOneRemit(target, oneTxId);
-        if (result.ok) {
+        const result = await executeOneRemit(target, request, oneTxId);
+        if (result.pending) {
+          pendingCount += 1;
+        } else if (result.ok) {
           settledCount += 1;
           lastHash = result.txHash ?? lastHash;
         } else {
@@ -669,7 +704,7 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
 
       notifyUsageRefresh();
 
-      if (failedCount === 0) {
+      if (failedCount === 0 && pendingCount === 0) {
         updateTxCard({
           id: txId,
           status: "settled",
@@ -686,6 +721,27 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
           label: `Batch settled ${settledCount}/${targets.length}`,
           status: "complete",
           metadata: { settledCount, failedCount },
+        });
+        return;
+      }
+
+      if (pendingCount > 0) {
+        updateTxCard({
+          id: txId,
+          status: "pending",
+          asset: preview.asset,
+          amount: preview.totalAmount ?? preview.amount,
+          recipient: `${settledCount} settled · ${pendingCount} pending`,
+          network: preview.network,
+          timestamp: Date.now(),
+          txHash: lastHash,
+        });
+        completeExecution(undefined, undefined);
+        void track({
+          kind: "transfer",
+          label: `Batch submitted: ${settledCount} settled, ${pendingCount} pending, ${failedCount} failed`,
+          status: "pending",
+          metadata: { settledCount, pendingCount, failedCount, failures },
         });
         return;
       }
@@ -721,10 +777,15 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
     }
 
     // Single recipient — executeOneRemit owns the same txId card/activity.
-    const only = targets[0];
-    const result = await executeOneRemit(only, txId);
+    const only = authorizedTargets[0];
+    const result = await executeOneRemit(only.target, only.request, txId);
+    if (result.pending) {
+      completeExecution(undefined, txId);
+      notifyUsageRefresh();
+      return;
+    }
     if (result.ok) {
-      completeExecution(result.txHash, txId);
+      completeExecution(result.txHash, txId, { transferId: result.transferId });
       notifyUsageRefresh();
       return;
     }
@@ -733,6 +794,7 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
   };
 
   const activeOrb = listening || phase === "thinking" || phase === "executing";
+  const processing = phase === "thinking" || phase === "executing";
 
   const showPreview =
     Boolean(preview) &&
@@ -740,20 +802,20 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-[#F5F5F5] text-black">
-      <div className="flex flex-col items-center border-b border-black/10 bg-white py-6">
-        <AIOrb active={activeOrb} size="lg" />
-        <div className="mt-3 flex items-center justify-center gap-2">
-          <p className="text-xs font-medium uppercase tracking-widest text-black">
+      <div className="flex items-center gap-3 border-b border-black/10 bg-white px-5 py-3">
+        <AIOrb active={activeOrb} size="sm" animation="pulse" className="shrink-0" />
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-black">
             {AGENT_NAME}
           </p>
-          {isConnected && verified && smartWalletActive && (
-            <SmartWalletBalanceBubble />
-          )}
+          <p className="subheading-text mt-0.5 flex items-center gap-1.5 truncate text-xs text-black/50">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#16C784]" aria-hidden="true" />
+            Online
+          </p>
         </div>
-        <p className="subheading-text mt-1 text-center text-xs text-black/50">{AGENT_TAGLINE}</p>
       </div>
 
-      {isConnected && !verified && (
+      {isConnected && needsWalletSignature && !verified && (
         <div className="mx-4 mb-2 rounded-2xl border border-black/10 bg-white px-3 py-2 text-xs text-black/80 shadow-sm">
           {verifying
             ? "Confirm ownership in your wallet"
@@ -772,51 +834,43 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
         </div>
       )}
 
-      {isConnected && verified && !smartWalletActive && (
+      {isConnected && needsWalletSignature && verified && !smartWalletActive && (
         <SmartWalletActivation
           onActivate={() => void activateSmartWallet()}
           activating={activating}
         />
       )}
 
-      {isBoundMismatch && (
+      {needsWalletSignature && isBoundMismatch && (
         <div className="mx-4 mb-2 rounded-2xl border border-amber-500/30 bg-amber-50 px-3 py-2 text-xs text-amber-900">
           Connected wallet does not match your bound wallet. Replace your wallet in Settings to
           continue.
         </div>
       )}
 
-      {showBoundBanner && (
-        <div className="mx-4 mb-2 rounded-2xl border border-black/10 bg-white px-3 py-2 text-xs text-black/80 shadow-sm">
-          Smart wallet bound. You can send now.
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl space-y-3 p-4 md:p-6">
+          {messages.map((m) => (
+            <ChatBubble key={m.id} message={m} />
+          ))}
+          {txCards.map((r) => (
+            <TransactionStatusCard key={r.id} record={r} />
+          ))}
+          {showPreview && preview && (
+            <TransactionPreviewCard
+              preview={preview}
+              phase={phase}
+              onConfirm={handleConfirm}
+              onCancel={cancelPreview}
+              connected={identityConnected}
+              walletConnected={isConnected}
+              canTransact={canTransact}
+              requiresWalletSignature={needsWalletSignature}
+              ownershipVerified={emailOnlyMode || verified}
+              smartWalletActive={smartWalletActive}
+            />
+          )}
         </div>
-      )}
-
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-4">
-        {messages.map((m) => (
-          <ChatBubble
-            key={m.id}
-            message={m}
-            context={{
-              lastUserMessage: messages.slice().reverse().find((x) => x.role === "user")?.content,
-            }}
-            preview={showPreview ? preview : null}
-          />
-        ))}
-        {txCards.map((r) => (
-          <TransactionStatusCard key={r.id} record={r} />
-        ))}
-        {showPreview && preview && (
-          <TransactionPreviewCard
-            preview={preview}
-            phase={phase}
-            onConfirm={handleConfirm}
-            onCancel={cancelPreview}
-            connected={isConnected && canTransact}
-            ownershipVerified={verified}
-            smartWalletActive={smartWalletActive}
-          />
-        )}
       </div>
 
       {voiceDraft && (
@@ -825,8 +879,8 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="border-t border-black/10 bg-white p-4">
-        <div className="flex gap-2 rounded-full border border-black/10 bg-[#F5F5F5] p-1.5 transition focus-within:border-black/30">
+      <form onSubmit={handleSubmit} className="px-4 pb-2">
+        <div className="mx-auto flex max-w-3xl gap-2 rounded-full border border-black/10 bg-[#FAFAFA] p-1.5 transition focus-within:border-black/30">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -834,7 +888,7 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
             disabled={
               phase === "awaiting_signature" ||
               phase === "executing" ||
-              (isConnected && !canTransact)
+              (isConnected && needsWalletSignature && !canTransact)
             }
             className="min-w-0 flex-1 bg-transparent px-3 py-2 text-sm text-black placeholder:text-black/35 outline-none"
           />
@@ -865,9 +919,14 @@ export default function AIAgentPanel({ onRequestWallet }: Props) {
             variant="primary"
             size="sm"
             className="h-10 w-10 shrink-0 rounded-xl p-0"
-            disabled={!input.trim() || phase === "awaiting_signature"}
+            disabled={processing || !input.trim() || phase === "awaiting_signature"}
+            aria-label={processing ? "Damian is processing" : "Send message"}
           >
-            <Send className="h-4 w-4" />
+            {processing ? (
+              <Square className="h-3.5 w-3.5 fill-current" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
           </Button>
         </div>
       </form>

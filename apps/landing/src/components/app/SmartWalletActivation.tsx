@@ -12,7 +12,7 @@ export default function SmartWalletActivation({ onActivate, activating }: Props)
     <div className="mx-4 mb-4 rounded-2xl border border-black/10 bg-white p-4 shadow-sm">
       <h3 className="text-sm font-semibold text-black">Smart Wallet Required</h3>
       <p className="mt-2 text-xs leading-relaxed text-black/60">
-        Coretta uses a Smart Wallet to simplify transactions, sponsorship, account recovery, and
+        Coretta uses a Smart Wallet to simplify transactions, USDC network fees, account recovery, and
         AI-assisted transfers. Activate your Smart Wallet to continue.
       </p>
       <Button

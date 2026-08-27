@@ -3,13 +3,15 @@ import { z } from "zod";
 import { prisma } from "@coretta/db";
 import { formatMicroToUsdc, ARC_EXPLORER } from "@coretta/shared";
 import { resolveSession } from "../services/auth.js";
-import { createRemittance, executeRemittance } from "../services/orchestrator.js";
+import {
+  createRemittance,
+  executeRemittance,
+  refreshCircleRemittance,
+} from "../services/orchestrator.js";
 import {
   getWalletBalanceMicro,
   findUserByIdentity,
   ensureCircleScaDeployed,
-  deployAllCounterfactualCircleScas,
-  resetAndDeployAllCircleScas,
 } from "../services/wallet.js";
 import {
   activateSmartWallet,
@@ -31,9 +33,27 @@ import {
   listMemories,
   retrieveMemories,
   setPreference,
-  upsertMemory,
   clearMemories,
 } from "../services/ai.js";
+import {
+  forgetSavedRecipient,
+  listSavedRecipients,
+  resolveSavedRecipient,
+  saveRecipient,
+  updateSavedRecipient,
+} from "../services/saved-recipients.js";
+import {
+  getLastSettledTransfer,
+  HISTORY_PERIODS,
+  resolveHistoryPeriod,
+  searchUserTransfers,
+  settledTransferStates,
+  sumSettledTransfersTo,
+} from "../services/damian-history.js";
+import {
+  generateDamianConversationReply,
+  isDamianModelConfigured,
+} from "../services/damian-conversation.js";
 
 import {
   anonymousUsageMetrics,
@@ -42,26 +62,263 @@ import {
   trackUsageEvent,
 } from "../services/limits.js";
 import { determineOptimalRoute } from "../services/router.js";
-import { authenticateWalletOwnership } from "../services/wallet-auth.js";
+import {
+  authenticateWalletOwnership,
+  linkWalletIdentity,
+} from "../services/wallet-auth.js";
+import {
+  authenticatePrivyEmail,
+  inspectPrivyEmailAccount,
+  isPrivyConfigured,
+} from "../services/privy.js";
+import {
+  authorizeRemit,
+  authorizeSwap,
+  requiresWalletTransactionAuthorization,
+} from "../services/transaction-auth.js";
 import {
   listWalletInteractions,
   recordWalletInteraction,
 } from "../services/wallet-interactions.js";
 import { normalizeWalletAddress } from "@coretta/shared";
 
+const transactionAuthorizationSchema = z.object({
+  message: z.string().min(100).max(20_000),
+  signature: z.string().regex(/^0x[a-fA-F0-9]+$/).min(100).max(300),
+});
+
+const TRANSIENT_DATABASE_ERROR =
+  /P1001|P1002|P1017|Can't reach database server|connection pool|timed out fetching|ECONNRESET|ETIMEDOUT|ENOTFOUND/i;
+
+const PREFERRED_NAME_EDIT_INTERVAL_MS = 14 * 24 * 60 * 60 * 1000;
+
+function preferredNameState(user: {
+  preferredName: string | null;
+  preferredNameUpdatedAt: Date | null;
+}) {
+  const nextEditAt = user.preferredNameUpdatedAt
+    ? new Date(user.preferredNameUpdatedAt.getTime() + PREFERRED_NAME_EDIT_INTERVAL_MS)
+    : null;
+  const canEditPreferredName = !user.preferredName || !nextEditAt || nextEditAt <= new Date();
+
+  return {
+    preferredName: user.preferredName ?? "",
+    preferredNameUpdatedAt: user.preferredNameUpdatedAt?.toISOString() ?? null,
+    nextPreferredNameEditAt: nextEditAt?.toISOString() ?? null,
+    canEditPreferredName,
+  };
+}
+
+async function retryDatabaseRead<T>(operation: () => Promise<T>): Promise<T> {
+  const attempts = 3;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!TRANSIENT_DATABASE_ERROR.test(message) || attempt === attempts - 1) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400 * 2 ** attempt));
+    }
+  }
+
+  throw lastError;
+}
+
 export async function registerRoutes(app: FastifyInstance) {
   app.get("/health", async () => ({ ok: true, service: "coretta-api" }));
 
-  /** Email auth temporarily disabled — wallet-only. */
+  app.get("/health/database", async (_req, reply) => {
+    try {
+      await retryDatabaseRead(() => prisma.$queryRawUnsafe("SELECT 1"));
+      return reply.send({ ok: true, database: "reachable" });
+    } catch (error) {
+      log.error("database", "Database health check failed", {
+        message: error instanceof Error ? error.message : "DATABASE_UNAVAILABLE",
+      });
+      return reply.code(503).send({
+        ok: false,
+        database: "unavailable",
+        code: "DATABASE_UNAVAILABLE",
+      });
+    }
+  });
+
   app.get("/v1/auth/email-status", async (_req, reply) => {
+    const configured = isPrivyConfigured();
     return reply.send({
-      configured: false,
-      provider: "Disabled",
+      configured,
+      provider: "Privy",
       fromAddress: null,
-      devMode: process.env.DEV_MODE === "true",
-      reason:
-        "Email login and OTP are temporarily disabled. Connect a browser wallet and verify ownership to authenticate.",
+      devMode: process.env.DEV_MODE !== "false",
+      reason: configured
+        ? null
+        : "Set PRIVY_APP_ID and PRIVY_APP_SECRET on the API, plus NEXT_PUBLIC_PRIVY_APP_ID on the Next app.",
     });
+  });
+
+  app.get("/v1/auth/wallet-status", async (req, reply) => {
+    try {
+      const query = z
+        .object({ address: z.string().regex(/^0x[a-fA-F0-9]{40}$/) })
+        .parse(req.query);
+      const user = await retryDatabaseRead(() =>
+        findUserByIdentity("wallet", query.address),
+      );
+      return reply.send({
+        existing: Boolean(user?.wallets[0]),
+        smartWalletAddress: user?.wallets[0]?.scaAddress ?? null,
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) throw error;
+      log.error("auth", "Wallet onboarding status check failed", {
+        message: error instanceof Error ? error.message : "WALLET_STATUS_FAILED",
+      });
+      return reply.code(503).send({
+        code: "DATABASE_UNAVAILABLE",
+        message: "Coretta could not check this wallet account. Please retry.",
+      });
+    }
+  });
+
+  app.post("/v1/auth/privy/status", async (req, reply) => {
+    if (!isPrivyConfigured()) {
+      return reply.code(503).send({
+        code: "PRIVY_NOT_CONFIGURED",
+        message: "Privy email authentication is not configured on the API.",
+      });
+    }
+    const header = req.headers.authorization;
+    const accessToken = header?.startsWith("Bearer ") ? header.slice(7) : "";
+    if (!accessToken) {
+      return reply.code(401).send({
+        code: "PRIVY_TOKEN_MISSING",
+        message: "A Privy access token is required.",
+      });
+    }
+    try {
+      return reply.send(
+        await retryDatabaseRead(() => inspectPrivyEmailAccount(accessToken)),
+      );
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "PRIVY_AUTH_FAILED";
+      log.error("auth", "Privy onboarding status check failed", { message: code });
+      if (/P1001|P1002|database server|connection pool|timed out fetching/i.test(code)) {
+        return reply.code(503).send({
+          code: "DATABASE_UNAVAILABLE",
+          message: "Coretta could not check this email account. Please retry.",
+        });
+      }
+      return reply.code(401).send({
+        code: code === "PRIVY_EMAIL_REQUIRED" ? code : "PRIVY_AUTH_FAILED",
+        message: "Privy could not verify this login session.",
+      });
+    }
+  });
+
+  app.post("/v1/auth/privy", async (req, reply) => {
+    if (!isPrivyConfigured()) {
+      return reply.code(503).send({
+        code: "PRIVY_NOT_CONFIGURED",
+        message: "Privy email authentication is not configured on the API.",
+      });
+    }
+
+    const header = req.headers.authorization;
+    const accessToken = header?.startsWith("Bearer ") ? header.slice(7) : "";
+    if (!accessToken) {
+      return reply.code(401).send({
+        code: "PRIVY_TOKEN_MISSING",
+        message: "A Privy access token is required.",
+      });
+    }
+
+    const { linkToWallet } = z
+      .object({ linkToWallet: z.boolean().optional().default(false) })
+      .parse(req.body ?? {});
+
+    const corettaHeader = req.headers["x-coretta-session"];
+    const corettaToken = Array.isArray(corettaHeader)
+      ? corettaHeader[0]
+      : corettaHeader;
+    let existingUser: Awaited<ReturnType<typeof resolveSession>> = null;
+    if (corettaToken) {
+      try {
+        existingUser = await resolveSession(`Bearer ${corettaToken}`);
+      } catch (error) {
+        log.error("auth", "Coretta wallet session lookup failed during Privy auth", {
+          message: error instanceof Error ? error.message : "SESSION_LOOKUP_FAILED",
+        });
+        return reply.code(503).send({
+          code: "DATABASE_UNAVAILABLE",
+          message: "Coretta could not verify the existing wallet session. Please retry.",
+        });
+      }
+    }
+    if (linkToWallet && !existingUser) {
+      return reply.code(401).send({
+        code: "CORETTA_WALLET_SESSION_REQUIRED",
+        message: "Verify the connected wallet before linking an email.",
+      });
+    }
+
+    try {
+      const result = await authenticatePrivyEmail(accessToken, existingUser?.id);
+      const wallet = result.user.wallets[0];
+      const metrics = await getUserUsageMetrics(result.user.id);
+      return reply.send({
+        token: result.token,
+        expiresAt: result.expiresAt.toISOString(),
+        email: result.email,
+        smartWalletAddress: wallet?.scaAddress ?? null,
+        metrics,
+        user: {
+          id: result.user.id,
+          walletAddress: wallet?.scaAddress ?? null,
+          identities: result.user.identities.map((identity) => ({
+            type: identity.type,
+            value: identity.normalizedValue,
+          })),
+        },
+      });
+    } catch (error) {
+      const errorCode = error instanceof Error ? error.message : "PRIVY_AUTH_FAILED";
+      log.error("auth", "Privy authentication exchange failed", {
+        message: errorCode,
+      });
+      if (errorCode === "EMAIL_ALREADY_LINKED") {
+        return reply.code(409).send({
+          code: errorCode,
+          message: "This verified email is already linked to another Coretta account.",
+        });
+      }
+      if (errorCode === "PRIVY_EMAIL_REQUIRED") {
+        return reply.code(422).send({
+          code: errorCode,
+          message: "The Privy account does not contain a verified email.",
+        });
+      }
+      if (/P1001|P1002|database server|connection pool|timed out fetching/i.test(errorCode)) {
+        return reply.code(503).send({
+          code: "DATABASE_UNAVAILABLE",
+          message: "Coretta could not save the verified email. Please retry.",
+        });
+      }
+      if (/Circle|wallet set|entity secret|createWallet/i.test(errorCode)) {
+        return reply.code(502).send({
+          code: "WALLET_PROVISIONING_FAILED",
+          message: "The email was verified, but the smart wallet could not be prepared.",
+        });
+      }
+      return reply.code(401).send({
+        code: "PRIVY_AUTH_FAILED",
+        message: "Privy could not verify this login session.",
+      });
+    }
   });
 
   app.get("/v1/user/usage", async (req, reply) => {
@@ -136,15 +393,15 @@ export async function registerRoutes(app: FastifyInstance) {
 
   app.post("/v1/auth/otp/send", async (_req, reply) => {
     return reply.code(410).send({
-      code: "EMAIL_AUTH_DISABLED",
-      message: "Email OTP is temporarily disabled. Use wallet connection.",
+      code: "PRIVY_CLIENT_AUTH_REQUIRED",
+      message: "Email codes are sent by Privy's browser SDK. Use POST /v1/auth/privy after Privy login.",
     });
   });
 
   app.post("/v1/auth/otp/verify", async (_req, reply) => {
     return reply.code(410).send({
-      code: "EMAIL_AUTH_DISABLED",
-      message: "Email OTP is temporarily disabled. Use wallet connection.",
+      code: "PRIVY_CLIENT_AUTH_REQUIRED",
+      message: "Email codes are verified by Privy's browser SDK. Use POST /v1/auth/privy after Privy login.",
     });
   });
 
@@ -256,6 +513,7 @@ export async function registerRoutes(app: FastifyInstance) {
         message === "INVALID_SIGNATURE" ||
         message === "INVALID_OWNERSHIP_MESSAGE" ||
         message === "ADDRESS_MISMATCH" ||
+        message === "WRONG_CHAIN" ||
         message === "MESSAGE_EXPIRED"
           ? 401
           : 400;
@@ -280,9 +538,11 @@ export async function registerRoutes(app: FastifyInstance) {
 
   app.addHook("preHandler", async (req, reply) => {
     if (
-      req.url === "/health" ||
+      req.url.startsWith("/health") ||
       req.url.startsWith("/v1/auth/") ||
       req.url.startsWith("/v1/presence/") ||
+      req.url.startsWith("/v1/user/usage") ||
+      req.url.startsWith("/v1/routes/estimate") ||
       req.method === "OPTIONS"
     ) {
       return;
@@ -313,24 +573,67 @@ export async function registerRoutes(app: FastifyInstance) {
         type: i.type,
         value: i.normalizedValue,
       })),
+      ...preferredNameState(user),
       ...binding,
     };
   });
 
+  app.get("/v1/me/profile", async (req) => {
+    return preferredNameState(req.user!);
+  });
+
+  app.patch("/v1/me/profile", async (req, reply) => {
+    const user = req.user!;
+    const { preferredName } = z
+      .object({ preferredName: z.string().trim().min(1).max(40) })
+      .parse(req.body);
+
+    if (user.preferredName === preferredName) {
+      return reply.send(preferredNameState(user));
+    }
+
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - PREFERRED_NAME_EDIT_INTERVAL_MS);
+    const result = await prisma.user.updateMany({
+      where: {
+        id: user.id,
+        OR: [
+          { preferredName: null },
+          { preferredNameUpdatedAt: null },
+          { preferredNameUpdatedAt: { lte: cutoff } },
+        ],
+      },
+      data: { preferredName, preferredNameUpdatedAt: now },
+    });
+
+    if (result.count === 0) {
+      const current = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      const state = preferredNameState(current);
+      const retryAfterSeconds = state.nextPreferredNameEditAt
+        ? Math.max(
+            1,
+            Math.ceil(
+              (new Date(state.nextPreferredNameEditAt).getTime() - Date.now()) / 1000,
+            ),
+          )
+        : 1;
+      return reply
+        .header("Retry-After", retryAfterSeconds)
+        .code(429)
+        .send({
+          code: "PREFERRED_NAME_EDIT_COOLDOWN",
+          message: "You can edit your preferred name once every 14 days.",
+          ...state,
+        });
+    }
+
+    return reply.send(
+      preferredNameState({ preferredName, preferredNameUpdatedAt: now }),
+    );
+  });
+
   app.get("/v1/wallet/status", async (req) => {
     const user = req.user!;
-    // Best-effort deploy any counterfactual Circle SCAs while checking status.
-    for (const w of user.wallets) {
-      if (w.vendor === "circle_modular" && w.vendorWalletId && w.counterfactual) {
-        void ensureCircleScaDeployed({
-          id: w.id,
-          vendor: w.vendor,
-          vendorWalletId: w.vendorWalletId,
-          scaAddress: w.scaAddress,
-          counterfactual: w.counterfactual,
-        });
-      }
-    }
     const binding = await getWalletBindingStatus(user.id);
     const wallets = user.wallets.map((w) => ({
       scaAddress: w.scaAddress,
@@ -338,7 +641,11 @@ export async function registerRoutes(app: FastifyInstance) {
       counterfactual: w.counterfactual,
       vendorWalletId: w.vendorWalletId,
     }));
-    return { ...binding, wallets };
+    return {
+      ...binding,
+      wallets,
+      requiresWalletSignature: requiresWalletTransactionAuthorization(user),
+    };
   });
 
   /** Deploy the caller's still-counterfactual Circle SCAs on-chain. */
@@ -366,19 +673,6 @@ export async function registerRoutes(app: FastifyInstance) {
     return reply.send({ ok: true, results });
   });
 
-  /**
-   * Deploy all counterfactual Circle SCAs in the database.
-   * Query reset=true marks every circle_modular wallet counterfactual first, then deploys.
-   */
-  app.post("/v1/wallet/deploy-all", async (req, reply) => {
-    const query = (req.query ?? {}) as { reset?: string };
-    const reset = query.reset === "true" || query.reset === "1";
-    const summary = reset
-      ? await resetAndDeployAllCircleScas()
-      : await deployAllCounterfactualCircleScas();
-    return reply.send({ ok: true, reset, ...summary });
-  });
-
   app.post("/v1/wallet/activate", async (req) => {
     const user = req.user!;
     const body = z
@@ -399,6 +693,30 @@ export async function registerRoutes(app: FastifyInstance) {
       .object({ primaryWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/) })
       .parse(req.body);
     return bindPrimaryWallet(user.id, body.primaryWalletAddress);
+  });
+
+  app.post("/v1/wallet/link-external", async (req, reply) => {
+    const user = req.user!;
+    const body = z
+      .object({
+        address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+        message: z.string().min(32).max(2000),
+        signature: z.string().min(80).max(200),
+      })
+      .parse(req.body);
+    try {
+      return reply.send(await linkWalletIdentity(user.id, body));
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "WALLET_LINK_FAILED";
+      const status = code === "WALLET_ALREADY_LINKED" ? 409 : 400;
+      return reply.code(status).send({
+        code,
+        message:
+          code === "WALLET_ALREADY_LINKED"
+            ? "This wallet already belongs to another Coretta account."
+            : "Coretta could not verify and link this wallet.",
+      });
+    }
   });
 
   /**
@@ -578,18 +896,47 @@ export async function registerRoutes(app: FastifyInstance) {
           value: z.string().min(3),
         }),
         amount: z.string(),
+        asset: z.enum(["USDC", "EURC"]).optional().default("USDC"),
         idempotencyKey: z.string().uuid(),
         execute: z.boolean().optional().default(true),
+        authorization: transactionAuthorizationSchema.optional(),
       })
       .parse(req.body);
 
     const user = req.user!;
+    if (requiresWalletTransactionAuthorization(user)) {
+      if (!body.authorization) {
+        return reply.code(401).send({
+          code: "WALLET_AUTHORIZATION_REQUIRED",
+          message: "The external wallet linked to this account must authorize this remittance.",
+        });
+      }
+      try {
+        await authorizeRemit({
+          user,
+          ...body.authorization,
+          request: {
+            recipient: body.recipient,
+            amount: body.amount,
+            asset: body.asset,
+            idempotencyKey: body.idempotencyKey,
+          },
+        });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "TRANSACTION_UNAUTHORIZED";
+        return reply.code(code === "WALLET_NOT_LINKED" ? 403 : 401).send({
+          code,
+          message: "Transaction signature is invalid, expired, or does not match this remittance.",
+        });
+      }
+    }
     await createAuditEvent({
       actorId: user.id,
       action: "TRANSACTION_PREPARED",
       metadata: {
         recipient: body.recipient,
         amount: body.amount,
+        asset: body.asset,
       },
     });
 
@@ -598,6 +945,7 @@ export async function registerRoutes(app: FastifyInstance) {
       recipientType: body.recipient.type,
       recipientValue: body.recipient.value,
       amount: body.amount,
+      asset: body.asset,
       idempotencyKey: body.idempotencyKey,
     });
 
@@ -614,77 +962,42 @@ export async function registerRoutes(app: FastifyInstance) {
         transferId: transfer.id,
         state: transfer.state,
         amountUsdc: formatMicroToUsdc(transfer.amountMicro),
+        amount: formatMicroToUsdc(transfer.amountMicro),
+        asset: transfer.asset,
       });
     }
 
     try {
-      const settled = await executeRemittance(transfer.id);
-      // Usage dashboard is wallet-scoped by connected EOA — never use SCA here.
-      const eoaRaw =
-        user.identities.find((i) => i.type === "wallet")?.normalizedValue ??
-        user.wallets.find((w) => w.ownerAddress)?.ownerAddress ??
-        null;
-      let eoa: string | null = null;
-      if (eoaRaw) {
-        try {
-          eoa = normalizeWalletAddress(eoaRaw);
-        } catch {
-          eoa = eoaRaw.toLowerCase();
-        }
-      }
-      if (eoa) {
-        await trackUsageEvent({
-          walletAddress: eoa,
-          userId: user.id,
-          key: "sponsoredTxCount",
-        });
-        await trackUsageEvent({
-          walletAddress: eoa,
-          userId: user.id,
-          key: "sponsoredUsdMicro",
-          amount: settled.amountMicro,
-        });
-      } else {
-        // Fallback: user-scoped counters only (no EOA linked)
-        await trackUsageEvent({
-          userId: user.id,
-          key: "sponsoredTxCount",
-        });
-        await trackUsageEvent({
-          userId: user.id,
-          key: "sponsoredUsdMicro",
-          amount: settled.amountMicro,
-        });
-        log.info("remit", "Sponsored usage tracked without EOA (user-scoped)", {
-          transferId: settled.id,
-          userId: user.id,
-        });
-      }
+      const execution = await executeRemittance(transfer.id);
+      const isSettled = execution.state === "SETTLED" || execution.state === "INCLUDED";
       await createAuditEvent({
         actorId: user.id,
         action: "TRANSACTION_SUBMITTED",
         metadata: {
-          transferId: settled.id,
-          txHash: settled.txHash,
-          state: settled.state,
-          walletAddress: eoa,
+          transferId: execution.id,
+          txHash: execution.txHash,
+          state: execution.state,
         },
       });
-      log.info("remit", "Remittance settled", {
-        transferId: settled.id,
-        state: settled.state,
-        txHash: settled.txHash,
-        usageWallet: eoa,
+      log.info("remit", isSettled ? "Remittance settled" : "Remittance submitted", {
+        transferId: execution.id,
+        state: execution.state,
+        txHash: execution.txHash,
       });
-      return reply.send({
-        transferId: settled.id,
-        state: settled.state,
-        amountUsdc: formatMicroToUsdc(settled.amountMicro),
-        userOpHash: settled.userOpHash,
-        txHash: settled.txHash,
-        explorerUrl: settled.txHash
-          ? `${ARC_EXPLORER}/tx/${settled.txHash}`
+      return reply.code(isSettled ? 200 : 202).send({
+        transferId: execution.id,
+        state: execution.state,
+        amountUsdc: formatMicroToUsdc(execution.amountMicro),
+        amount: formatMicroToUsdc(execution.amountMicro),
+        asset: execution.asset,
+        userOpHash: execution.userOpHash,
+        txHash: execution.txHash,
+        explorerUrl: execution.txHash
+          ? `${ARC_EXPLORER}/tx/${execution.txHash}`
           : undefined,
+        message: isSettled
+          ? undefined
+          : "Transfer submitted and awaiting Circle confirmation.",
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "EXECUTION_FAILED";
@@ -707,28 +1020,64 @@ export async function registerRoutes(app: FastifyInstance) {
   app.post("/v1/swap", async (req, reply) => {
     const body = z
       .object({
-        tokenIn: z.enum(["USDC", "EURC", "NATIVE", "USDT"]),
-        tokenOut: z.enum(["USDC", "EURC", "NATIVE", "USDT"]),
+        tokenIn: z.enum(["USDC", "EURC"]),
+        tokenOut: z.enum(["USDC", "EURC"]),
         amountIn: z.string().min(1).max(32),
-        /** Optional override; defaults to user's first SCA */
-        walletAddress: z
-          .string()
-          .regex(/^0x[a-fA-F0-9]{40}$/)
-          .optional(),
+        authorization: transactionAuthorizationSchema.optional(),
       })
       .parse(req.body);
 
     const user = req.user!;
+    if (requiresWalletTransactionAuthorization(user)) {
+      if (!body.authorization) {
+        return reply.code(401).send({
+          code: "WALLET_AUTHORIZATION_REQUIRED",
+          message: "The external wallet linked to this account must authorize this swap.",
+        });
+      }
+      try {
+        await authorizeSwap({
+          user,
+          ...body.authorization,
+          tokenIn: body.tokenIn,
+          tokenOut: body.tokenOut,
+          amountIn: body.amountIn,
+        });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "TRANSACTION_UNAUTHORIZED";
+        return reply.code(code === "WALLET_NOT_LINKED" ? 403 : 401).send({
+          code,
+          message: "Transaction signature is invalid, expired, replayed, or does not match this swap.",
+        });
+      }
+    }
+    const wallet = user.wallets[0];
     const sca =
-      body.walletAddress ??
-      user.wallets[0]?.scaAddress ??
+      wallet?.scaAddress ??
       user.identities.find((i) => i.type === "wallet")?.normalizedValue;
 
     if (!sca) {
       return reply.code(400).send({
         code: "WALLET_MISSING",
-        message: "No smart wallet on account. Connect wallet and verify ownership first.",
+        message: "No smart wallet is available for this account.",
       });
+    }
+
+    if (
+      wallet?.vendor === "circle_modular" &&
+      wallet.vendorWalletId &&
+      wallet.counterfactual
+    ) {
+      const deployment = await ensureCircleScaDeployed(wallet);
+      if (!deployment.deployed) {
+        return reply.code(422).send({
+          ok: false,
+          code: "SMART_WALLET_DEPLOYMENT_FAILED",
+          message:
+            deployment.error ??
+            "Coretta could not activate this smart wallet before the swap.",
+        });
+      }
     }
 
     const eoaRaw =
@@ -791,21 +1140,139 @@ export async function registerRoutes(app: FastifyInstance) {
       explorerUrl: t.txHash ? `${ARC_EXPLORER}/tx/${t.txHash}` : undefined,
       counterpartyAddress:
         t.senderUserId === user.id
-          ? t.recipientWallet.scaAddress
+          ? t.destinationAddress ?? t.recipientWallet?.scaAddress ?? null
           : t.senderWallet.scaAddress,
     }));
+  });
+
+  app.get("/v1/activity", async (req) => {
+    const { limit } = z
+      .object({ limit: z.coerce.number().int().min(1).max(100).default(50) })
+      .parse(req.query);
+    const user = req.user!;
+
+    const [transfers, swapAudits] = await Promise.all([
+      prisma.transfer.findMany({
+        where: {
+          OR: [{ senderUserId: user.id }, { recipientUserId: user.id }],
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        include: {
+          senderWallet: true,
+          recipientWallet: true,
+        },
+      }),
+      prisma.auditLog.findMany({
+        where: {
+          actorId: user.id,
+          action: { in: ["SWAP_EXECUTED", "SWAP_FAILED"] },
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      }),
+    ]);
+
+    const transferActivity = transfers.map((transfer) => {
+      const direction = transfer.senderUserId === user.id ? "out" : "in";
+      const complete =
+        transfer.state === "SETTLED" || transfer.state === "INCLUDED";
+      const failed =
+        transfer.state === "FAILED" || transfer.state === "POLICY_DENIED";
+      const status = complete ? "complete" : failed ? "failed" : "pending";
+      const amount = formatMicroToUsdc(transfer.amountMicro);
+      const verb = direction === "out" ? "Send" : "Receive";
+      const label =
+        status === "failed"
+          ? `Failed ${verb.toLowerCase()}: ${amount} ${transfer.asset}`
+          : status === "pending"
+            ? `Pending ${verb.toLowerCase()}: ${amount} ${transfer.asset}`
+            : `${verb} ${amount} ${transfer.asset}`;
+
+      return {
+        id: `transfer_${transfer.id}`,
+        kind: "send" as const,
+        label,
+        status,
+        state: transfer.state,
+        createdAt: transfer.createdAt.toISOString(),
+        asset: transfer.asset,
+        amount,
+        recipient:
+          direction === "out"
+            ? transfer.destinationAddress ?? transfer.recipientWallet?.scaAddress ?? null
+            : transfer.senderWallet.scaAddress,
+        txHash: transfer.txHash ?? undefined,
+        failureReason:
+          transfer.failureReason ?? transfer.policyReason ?? undefined,
+        network: "Arc Testnet",
+        explorerUrl: transfer.txHash
+          ? `${ARC_EXPLORER}/tx/${transfer.txHash}`
+          : undefined,
+      };
+    });
+
+    const swapActivity = swapAudits.map((audit) => {
+      let metadata: Record<string, unknown> = {};
+      if (audit.metadata) {
+        try {
+          const parsed = JSON.parse(audit.metadata) as unknown;
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            metadata = parsed as Record<string, unknown>;
+          }
+        } catch {
+          metadata = {};
+        }
+      }
+      const value = (key: string) =>
+        typeof metadata[key] === "string" ? metadata[key] : undefined;
+      const tokenIn = value("tokenIn") ?? "USDC";
+      const tokenOut = value("tokenOut") ?? "EURC";
+      const amount = value("amountIn");
+      const txHash = value("txHash");
+      const failed = audit.action === "SWAP_FAILED";
+      const description = `${amount ? `${amount} ` : ""}${tokenIn} to ${tokenOut}`;
+
+      return {
+        id: `swap_${audit.id}`,
+        kind: "swap" as const,
+        label: failed ? `Failed swap: ${description}` : `Swap ${description}`,
+        status: failed ? ("failed" as const) : ("complete" as const),
+        state: failed ? "FAILED" : "SETTLED",
+        createdAt: audit.createdAt.toISOString(),
+        asset: tokenIn,
+        amount,
+        recipient: tokenOut,
+        txHash,
+        failureReason: failed ? value("message") : undefined,
+        network: "Arc Testnet",
+        explorerUrl: txHash ? `${ARC_EXPLORER}/tx/${txHash}` : undefined,
+      };
+    });
+
+    return {
+      activities: [...transferActivity, ...swapActivity]
+        .sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        )
+        .slice(0, limit),
+    };
   });
 
   app.get("/v1/transfers/:id", async (req, reply) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const user = req.user!;
-    const t = await prisma.transfer.findFirst({
+    let t = await prisma.transfer.findFirst({
       where: {
         id,
         OR: [{ senderUserId: user.id }, { recipientUserId: user.id }],
       },
     });
     if (!t) return reply.code(404).send({ code: "NOT_FOUND" });
+    if (t.state === "SUBMITTED" && t.circleTxId) {
+      t = await refreshCircleRemittance(t.id);
+    }
     return {
       id: t.id,
       state: t.state,
@@ -830,6 +1297,8 @@ export async function registerRoutes(app: FastifyInstance) {
       actorId: actor.id,
       memoryEnabled: preferences.memoryEnabled !== "false",
       personalizationEnabled: preferences.personalizationEnabled !== "false",
+      transactionHistoryEnabled: preferences.transactionHistoryEnabled === "true",
+      savedRecipientsEnabled: preferences.savedRecipientsEnabled === "true",
     };
   });
 
@@ -918,39 +1387,6 @@ export async function registerRoutes(app: FastifyInstance) {
       contextJson: body.context ? JSON.stringify(body.context) : null,
     });
 
-    // Safe learning: only update memory from explicit positive signals.
-    if (body.kind === "thumbs" && body.rating === 1 && body.context) {
-      const preview = body.context.preview as
-        | {
-            recipient?: string;
-            asset?: string;
-            amount?: string;
-            action?: string;
-          }
-        | undefined;
-
-      if (preview?.recipient && preview?.asset) {
-        await upsertMemory({
-          actorId: actor.id,
-          category: "RECIPIENT",
-          key: "last_recipient",
-          summary: `Last recipient: ${preview.recipient}`,
-          dataJson: JSON.stringify({ recipient: preview.recipient }),
-          confidence: 85,
-          source: "feedback",
-        });
-        await upsertMemory({
-          actorId: actor.id,
-          category: "ASSET_PREF",
-          key: "preferred_asset",
-          summary: `Preferred asset: ${preview.asset}`,
-          dataJson: JSON.stringify({ asset: preview.asset }),
-          confidence: 70,
-          source: "feedback",
-        });
-      }
-    }
-
     return { ok: true, feedbackId: feedback.id };
   });
 
@@ -1012,12 +1448,330 @@ export async function registerRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  app.post("/v1/ai/respond", async (req, reply) => {
+    const user = req.user!;
+    const body = z
+      .object({
+        conversationId: z.string().optional().nullable(),
+        message: z.string().trim().min(1).max(5_000),
+      })
+      .parse(req.body);
+    if (!isDamianModelConfigured()) {
+      return { available: false, reply: null };
+    }
+
+    const usage = await getUserUsageMetrics(user.id);
+    if (usage.aiRequestCount > usage.aiRequestLimit) {
+      return reply.code(429).send({
+        code: "AI_REQUEST_LIMIT_REACHED",
+        message: "You've reached today's Damian request limit.",
+      });
+    }
+
+    const actor = await getOrCreateActorForUser(user.id);
+    await ensureDefaultPreferences(actor.id);
+    const preferences = await getPreferences(actor.id);
+    const response = await generateDamianConversationReply({
+      actorId: actor.id,
+      conversationId: body.conversationId,
+      userMessage: body.message,
+      preferredName: user.preferredName,
+      personalizationEnabled: preferences.personalizationEnabled !== "false",
+    });
+    return { available: Boolean(response), reply: response };
+  });
+
+  const serializeSavedRecipient = (recipient: {
+    id: string;
+    label: string;
+    address: string;
+    network: string;
+    source: string;
+    isPreferred: boolean;
+    useCount: number;
+    lastUsedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }) => ({
+    id: recipient.id,
+    label: recipient.label,
+    address: recipient.address,
+    network: recipient.network,
+    source: recipient.source,
+    isPreferred: recipient.isPreferred,
+    useCount: recipient.useCount,
+    lastUsedAt: recipient.lastUsedAt?.toISOString() ?? null,
+    createdAt: recipient.createdAt.toISOString(),
+    updatedAt: recipient.updatedAt.toISOString(),
+  });
+
+  app.get("/v1/ai/saved-recipients", async (req) => {
+    const user = req.user!;
+    const actor = await getOrCreateActorForUser(user.id);
+    await ensureDefaultPreferences(actor.id);
+    const [preferences, recipients] = await Promise.all([
+      getPreferences(actor.id),
+      listSavedRecipients(user.id),
+    ]);
+    return {
+      enabled: preferences.savedRecipientsEnabled === "true",
+      recipients: recipients.map(serializeSavedRecipient),
+    };
+  });
+
+  app.post("/v1/ai/saved-recipients/resolve", async (req, reply) => {
+    const user = req.user!;
+    const body = z
+      .object({
+        label: z.string().min(1).max(80),
+        network: z.literal("arc-testnet").optional(),
+      })
+      .parse(req.body);
+    const actor = await getOrCreateActorForUser(user.id);
+    await ensureDefaultPreferences(actor.id);
+    const preferences = await getPreferences(actor.id);
+    if (preferences.savedRecipientsEnabled !== "true") {
+      return reply.code(403).send({
+        code: "SAVED_RECIPIENTS_DISABLED",
+        message: "Saved recipients are disabled in Damian Memory.",
+      });
+    }
+    const result = await resolveSavedRecipient({ userId: user.id, ...body });
+    return {
+      status: result.status,
+      matches: result.matches.map(serializeSavedRecipient),
+    };
+  });
+
+  app.post("/v1/ai/saved-recipients", async (req, reply) => {
+    const user = req.user!;
+    const body = z
+      .object({
+        label: z.string().min(1).max(80),
+        address: z.string().min(42).max(42),
+        network: z.literal("arc-testnet").optional(),
+        isPreferred: z.boolean().optional(),
+        createdFromTransferId: z.string().optional().nullable(),
+        confirmed: z.literal(true),
+      })
+      .parse(req.body);
+    const actor = await getOrCreateActorForUser(user.id);
+    await ensureDefaultPreferences(actor.id);
+    const preferences = await getPreferences(actor.id);
+    if (preferences.savedRecipientsEnabled !== "true") {
+      return reply.code(403).send({ code: "SAVED_RECIPIENTS_DISABLED" });
+    }
+    if (body.createdFromTransferId) {
+      const transfer = await prisma.transfer.findFirst({
+        where: { id: body.createdFromTransferId, senderUserId: user.id },
+        include: { recipientWallet: true },
+      });
+      const destination =
+        transfer?.destinationAddress ?? transfer?.recipientWallet?.scaAddress ?? null;
+      if (!transfer || !destination || destination.toLowerCase() !== body.address.toLowerCase()) {
+        return reply.code(400).send({ code: "TRANSFER_RECIPIENT_MISMATCH" });
+      }
+    }
+    try {
+      const recipient = await saveRecipient({ userId: user.id, ...body });
+      await prisma.auditLog.create({
+        data: {
+          actorId: user.id,
+          action: "SAVED_RECIPIENT_CREATED",
+          metadata: JSON.stringify({
+            savedRecipientId: recipient.id,
+            network: recipient.network,
+          }),
+        },
+      });
+      return reply.code(201).send({ recipient: serializeSavedRecipient(recipient) });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "SAVED_RECIPIENT_INVALID";
+      return reply.code(400).send({ code });
+    }
+  });
+
+  app.patch("/v1/ai/saved-recipients/:id", async (req, reply) => {
+    const user = req.user!;
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const body = z
+      .object({
+        label: z.string().min(1).max(80).optional(),
+        address: z.string().min(42).max(42).optional(),
+        isPreferred: z.boolean().optional(),
+        confirmed: z.literal(true),
+      })
+      .refine(
+        (value) =>
+          value.label !== undefined ||
+          value.address !== undefined ||
+          value.isPreferred !== undefined,
+        { message: "No saved-recipient change was provided." },
+      )
+      .parse(req.body);
+    try {
+      const recipient = await updateSavedRecipient({
+        userId: user.id,
+        recipientId: id,
+        label: body.label,
+        address: body.address,
+        isPreferred: body.isPreferred,
+      });
+      if (!recipient) return reply.code(404).send({ code: "NOT_FOUND" });
+      await prisma.auditLog.create({
+        data: {
+          actorId: user.id,
+          action: "SAVED_RECIPIENT_UPDATED",
+          metadata: JSON.stringify({ savedRecipientId: recipient.id }),
+        },
+      });
+      return { recipient: serializeSavedRecipient(recipient) };
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "SAVED_RECIPIENT_INVALID";
+      return reply.code(400).send({ code });
+    }
+  });
+
+  app.delete("/v1/ai/saved-recipients/:id", async (req, reply) => {
+    const user = req.user!;
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    z.object({ confirmed: z.literal(true) }).parse(req.body);
+    const recipient = await forgetSavedRecipient(user.id, id);
+    if (!recipient) return reply.code(404).send({ code: "NOT_FOUND" });
+    await prisma.auditLog.create({
+      data: {
+        actorId: user.id,
+        action: "SAVED_RECIPIENT_FORGOTTEN",
+        metadata: JSON.stringify({ savedRecipientId: recipient.id }),
+      },
+    });
+    return { ok: true };
+  });
+
+  app.post("/v1/ai/transactions/search", async (req, reply) => {
+    const user = req.user!;
+    const body = z
+      .object({
+        states: z.array(z.string().min(1).max(32)).max(10).optional(),
+        since: z.string().datetime().optional(),
+        until: z.string().datetime().optional(),
+        destinationAddresses: z.array(z.string().min(42).max(42)).max(20).optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      })
+      .parse(req.body);
+    const actor = await getOrCreateActorForUser(user.id);
+    await ensureDefaultPreferences(actor.id);
+    const preferences = await getPreferences(actor.id);
+    if (preferences.transactionHistoryEnabled !== "true") {
+      return reply.code(403).send({ code: "TRANSACTION_HISTORY_DISABLED" });
+    }
+    const transfers = await searchUserTransfers({
+      userId: user.id,
+      states: body.states,
+      since: body.since ? new Date(body.since) : undefined,
+      until: body.until ? new Date(body.until) : undefined,
+      destinationAddresses: body.destinationAddresses,
+      limit: body.limit,
+    });
+    return {
+      transfers: transfers.map(({ amountMicro: _amountMicro, ...transfer }) => ({
+        ...transfer,
+        createdAt: transfer.createdAt.toISOString(),
+        settledAt: transfer.settledAt?.toISOString() ?? null,
+      })),
+    };
+  });
+
+  app.get("/v1/ai/transactions/last-settled", async (req, reply) => {
+    const user = req.user!;
+    const query = z
+      .object({
+        period: z.enum(HISTORY_PERIODS).optional(),
+        timezoneOffsetMinutes: z.coerce.number().int().min(-840).max(840).default(0),
+      })
+      .parse(req.query);
+    const actor = await getOrCreateActorForUser(user.id);
+    await ensureDefaultPreferences(actor.id);
+    const preferences = await getPreferences(actor.id);
+    if (preferences.transactionHistoryEnabled !== "true") {
+      return reply.code(403).send({ code: "TRANSACTION_HISTORY_DISABLED" });
+    }
+    const transfer = await getLastSettledTransfer(
+      user.id,
+      resolveHistoryPeriod(query.period, query.timezoneOffsetMinutes),
+    );
+    if (!transfer) return { transfer: null };
+    const { amountMicro: _amountMicro, ...serializable } = transfer;
+    return {
+      transfer: {
+        ...serializable,
+        createdAt: transfer.createdAt.toISOString(),
+        settledAt: transfer.settledAt?.toISOString() ?? null,
+      },
+    };
+  });
+
+  app.post("/v1/ai/transactions/summary", async (req, reply) => {
+    const user = req.user!;
+    const body = z
+      .object({
+        label: z.string().min(1).max(80).optional(),
+        address: z.string().min(42).max(42).optional(),
+        since: z.string().datetime().optional(),
+        until: z.string().datetime().optional(),
+        period: z.enum(HISTORY_PERIODS).optional(),
+        timezoneOffsetMinutes: z.number().int().min(-840).max(840).default(0),
+      })
+      .refine((value) => Boolean(value.label || value.address), {
+        message: "A saved label or address is required.",
+      })
+      .parse(req.body);
+    const actor = await getOrCreateActorForUser(user.id);
+    await ensureDefaultPreferences(actor.id);
+    const preferences = await getPreferences(actor.id);
+    if (preferences.transactionHistoryEnabled !== "true") {
+      return reply.code(403).send({ code: "TRANSACTION_HISTORY_DISABLED" });
+    }
+
+    let addresses = body.address ? [body.address] : [];
+    if (body.label) {
+      if (preferences.savedRecipientsEnabled !== "true") {
+        return reply.code(403).send({ code: "SAVED_RECIPIENTS_DISABLED" });
+      }
+      const resolved = await resolveSavedRecipient({ userId: user.id, label: body.label });
+      if (resolved.status === "not_found") {
+        return reply.code(404).send({ code: "SAVED_RECIPIENT_NOT_FOUND" });
+      }
+      if (resolved.status === "ambiguous") {
+        return reply.code(409).send({
+          code: "SAVED_RECIPIENT_AMBIGUOUS",
+          matches: resolved.matches.map(serializeSavedRecipient),
+        });
+      }
+      addresses = resolved.matches.map((recipient) => recipient.address);
+    }
+    const periodRange = resolveHistoryPeriod(body.period, body.timezoneOffsetMinutes);
+    const totals = await sumSettledTransfersTo({
+      userId: user.id,
+      addresses,
+      since: body.since ? new Date(body.since) : periodRange.since,
+      until: body.until ? new Date(body.until) : periodRange.until,
+    });
+    return {
+      totals: totals.map(({ amountMicro: _amountMicro, ...total }) => total),
+      states: settledTransferStates(),
+      addresses,
+    };
+  });
+
   app.post("/v1/ai/preferences", async (req) => {
     const user = req.user!;
     const body = z
       .object({
         memoryEnabled: z.boolean().optional(),
         personalizationEnabled: z.boolean().optional(),
+        transactionHistoryEnabled: z.boolean().optional(),
+        savedRecipientsEnabled: z.boolean().optional(),
       })
       .parse(req.body);
     const actor = await getOrCreateActorForUser(user.id);
@@ -1031,10 +1785,26 @@ export async function registerRoutes(app: FastifyInstance) {
         body.personalizationEnabled ? "true" : "false",
       );
     }
+    if (typeof body.transactionHistoryEnabled === "boolean") {
+      await setPreference(
+        actor.id,
+        "transactionHistoryEnabled",
+        body.transactionHistoryEnabled ? "true" : "false",
+      );
+    }
+    if (typeof body.savedRecipientsEnabled === "boolean") {
+      await setPreference(
+        actor.id,
+        "savedRecipientsEnabled",
+        body.savedRecipientsEnabled ? "true" : "false",
+      );
+    }
     const preferences = await getPreferences(actor.id);
     return {
       memoryEnabled: preferences.memoryEnabled !== "false",
       personalizationEnabled: preferences.personalizationEnabled !== "false",
+      transactionHistoryEnabled: preferences.transactionHistoryEnabled === "true",
+      savedRecipientsEnabled: preferences.savedRecipientsEnabled === "true",
     };
   });
 }

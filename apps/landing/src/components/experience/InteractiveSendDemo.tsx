@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 const PIPELINE = [
   { key: "create", label: "Creating transfer", detail: "Packaging your payment securely." },
-  { key: "paymaster", label: "Gas sponsored", detail: "Circle Paymaster approves fees." },
+  { key: "paymaster", label: "USDC gas", detail: "Circle Paymaster enables USDC fees." },
   { key: "bundler", label: "Executing", detail: "Bundler routes to Arc." },
   { key: "settle", label: "Settled", detail: "Funds delivered in under a second." },
 ] as const;

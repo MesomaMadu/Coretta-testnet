@@ -5,13 +5,13 @@ export function humanizeTxFailure(err: unknown): string {
   const lower = raw.toLowerCase();
 
   if (lower.includes("user rejected") || lower.includes("denied") || lower.includes("rejected")) {
-    return "You rejected the transaction request from your wallet.";
+    return "User rejected the request.";
   }
   if (lower.includes("insufficient") || lower.includes("balance")) {
     return "Your wallet does not contain enough funds to complete this transfer.";
   }
   if (lower.includes("paymaster") || lower.includes("sponsor")) {
-    return "This transaction does not qualify for sponsorship under current paymaster rules.";
+    return "The paymaster rejected this USDC network-fee request.";
   }
   if (lower.includes("bundler")) {
     return "The transaction could not be submitted by the bundler. Please try again.";

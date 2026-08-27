@@ -21,8 +21,8 @@ const DEMO_STEPS = [
     visual: "wallet",
   },
   {
-    title: "Gas sponsored",
-    desc: "Circle Paymaster covers network fees. You never touch gas.",
+    title: "USDC gas fees",
+    desc: "Circle Paymaster lets compatible smart accounts pay network fees in USDC instead of native ETH.",
     icon: Shield,
     visual: "paymaster",
   },

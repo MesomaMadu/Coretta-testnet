@@ -39,7 +39,7 @@ export default function AIHero() {
             animate={{ opacity: 1, y: 0 }}
             className="mb-4 text-xs font-medium uppercase tracking-[0.25em] text-cyan-400/90"
           >
-            AI-native · Gasless · Arc Testnet
+            AI-native · USDC gas · Arc Testnet
           </motion.p>
 
           <motion.h1

@@ -5,37 +5,40 @@ generator client {
 // Local/prod: use PostgreSQL when DATABASE_URL is a Postgres URL (synced from main project).
 // SQLite only if you intentionally set provider = "sqlite" and a file: URL.
 datasource db {
-  provider = "postgresql"
+  provider  = "postgresql"
   url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
 model User {
-  id        String   @id @default(cuid())
-  kycTier   Int      @default(1)
-  status    String   @default("ACTIVE")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                     String    @id @default(cuid())
+  kycTier                Int       @default(1)
+  status                 String    @default("ACTIVE")
+  preferredName          String?
+  preferredNameUpdatedAt DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
-  identities Identity[]
-  wallets    Wallet[]
-  sent       Transfer[] @relation("SenderTransfers")
-  received   Transfer[] @relation("RecipientTransfers")
-  sessions   Session[]
-  limits     UserLimit?
-  usage      UsageRecord?
-  riskProfile UserRiskProfile?
+  identities      Identity[]
+  wallets         Wallet[]
+  sent            Transfer[]       @relation("SenderTransfers")
+  received        Transfer[]       @relation("RecipientTransfers")
+  savedRecipients SavedRecipient[]
+  sessions        Session[]
+  limits          UserLimit?
+  usage           UsageRecord?
+  riskProfile     UserRiskProfile?
 
-  aiActors   AiActor[]
+  aiActors AiActor[]
 }
 
 model Identity {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   userId          String
   type            String
   normalizedValue String
   verifiedAt      DateTime?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -44,19 +47,19 @@ model Identity {
 }
 
 model Wallet {
-  id              String   @id @default(cuid())
-  userId          String
-  chainId         Int      @default(5042002)
-  scaAddress      String   @unique
-  ownerAddress    String?
-  ownerKeyRef     String?
+  id             String   @id @default(cuid())
+  userId         String
+  chainId        Int      @default(5042002)
+  scaAddress     String   @unique
+  ownerAddress   String?
+  ownerKeyRef    String?
   /// Circle developer-controlled wallet UUID (when vendor is circle_modular)
-  vendorWalletId  String?  @unique
-  vendor          String   @default("circle_modular")
-  status          String   @default("ACTIVE")
-  counterfactual  Boolean  @default(false)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  vendorWalletId String?  @unique
+  vendor         String   @default("circle_modular")
+  status         String   @default("ACTIVE")
+  counterfactual Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   sentTransfers     Transfer[] @relation("SenderWallet")
@@ -78,41 +81,74 @@ model Session {
 }
 
 model UserLimit {
-  userId            String @id
-  dailySendMicro    BigInt @default(500000000)
-  dailySentMicro    BigInt @default(0)
-  dailyTxCount      Int    @default(0)
-  dailyTxLimit      Int    @default(50)
-  lastResetAt       DateTime @default(now())
+  userId         String   @id
+  dailySendMicro BigInt   @default(500000000)
+  dailySentMicro BigInt   @default(0)
+  dailyTxCount   Int      @default(0)
+  dailyTxLimit   Int      @default(50)
+  lastResetAt    DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Transfer {
-  id                 String   @id @default(cuid())
-  idempotencyKey     String   @unique
+  id                 String    @id @default(cuid())
+  idempotencyKey     String    @unique
   senderWalletId     String
-  recipientWalletId  String
+  recipientWalletId  String?
   amountMicro        BigInt
-  state              String   @default("REQUESTED")
-  riskScore          Int      @default(0)
+  asset              String    @default("USDC")
+  network            String    @default("arc-testnet")
+  destinationAddress String?
+  state              String    @default("REQUESTED")
+  riskScore          Int       @default(0)
   policyReason       String?
   userOpHash         String?
+  /// Circle developer-controlled wallet transaction ID for async reconciliation.
+  circleTxId         String?
   txHash             String?
   failureReason      String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  settledAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  senderWallet    Wallet @relation("SenderWallet", fields: [senderWalletId], references: [id])
-  recipientWallet Wallet @relation("RecipientWallet", fields: [recipientWalletId], references: [id])
-  sender          User   @relation("SenderTransfers", fields: [senderUserId], references: [id])
-  recipient       User   @relation("RecipientTransfers", fields: [recipientUserId], references: [id])
+  senderWallet    Wallet  @relation("SenderWallet", fields: [senderWalletId], references: [id])
+  recipientWallet Wallet? @relation("RecipientWallet", fields: [recipientWalletId], references: [id])
+  sender          User    @relation("SenderTransfers", fields: [senderUserId], references: [id])
+  recipient       User?   @relation("RecipientTransfers", fields: [recipientUserId], references: [id])
   senderUserId    String
-  recipientUserId String
+  recipientUserId String?
 
   @@index([senderWalletId, createdAt])
   @@index([recipientWalletId, createdAt])
+  @@index([senderUserId, createdAt])
+  @@index([recipientUserId, createdAt])
+  @@index([destinationAddress, createdAt])
   @@index([state])
+}
+
+model SavedRecipient {
+  id                    String    @id @default(cuid())
+  userId                String
+  label                 String
+  normalizedLabel       String
+  address               String
+  normalizedAddress     String
+  network               String    @default("arc-testnet")
+  source                String    @default("USER_CONFIRMED")
+  isPreferred           Boolean   @default(false)
+  useCount              Int       @default(0)
+  lastUsedAt            DateTime?
+  createdFromTransferId String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  deletedAt             DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, normalizedLabel, deletedAt])
+  @@index([userId, normalizedAddress, network])
+  @@index([userId, lastUsedAt])
 }
 
 model AuditLog {
@@ -126,13 +162,13 @@ model AuditLog {
 }
 
 model FraudSignal {
-  id        String   @id @default(cuid())
-  userId    String?
+  id         String   @id @default(cuid())
+  userId     String?
   transferId String?
-  signal    String
-  score     Int
-  metadata  String?
-  createdAt DateTime @default(now())
+  signal     String
+  score      Int
+  metadata   String?
+  createdAt  DateTime @default(now())
 
   @@index([userId])
 }
@@ -167,15 +203,15 @@ model AiActor {
 }
 
 model AiConversation {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   actorId   String
   title     String?
-  status    String   @default("ACTIVE") // ACTIVE | ARCHIVED
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  status    String    @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  actor    AiActor    @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  actor    AiActor     @relation(fields: [actorId], references: [id], onDelete: Cascade)
   messages AiMessage[]
 
   @@index([actorId, createdAt])
@@ -183,15 +219,15 @@ model AiConversation {
 }
 
 model AiMessage {
-  id             String   @id @default(cuid())
-  actorId        String
-  conversationId String?
-  role           String   // user | assistant | system
-  contentEnc     String   // encrypted content (AES-GCM envelope)
-  contentSummary String?  // safe, redactable summary for UI/search
+  id              String    @id @default(cuid())
+  actorId         String
+  conversationId  String?
+  role            String // user | assistant | system
+  contentEnc      String // encrypted content (AES-GCM envelope)
+  contentSummary  String? // safe, redactable summary for UI/search
   clientMessageId String? // optional client id for dedupe
-  createdAt      DateTime @default(now())
-  deletedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  deletedAt       DateTime?
 
   actor        AiActor         @relation(fields: [actorId], references: [id], onDelete: Cascade)
   conversation AiConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
@@ -203,19 +239,19 @@ model AiMessage {
 }
 
 model AiFeedback {
-  id           String   @id @default(cuid())
-  actorId      String
-  messageId    String?
-  rating       Int?     // 1 (up), -1 (down)
-  kind         String   // thumbs | report
-  issueType    String?  // WRONG_RECIPIENT | WRONG_AMOUNT | WRONG_ASSET | MISUNDERSTOOD_INTENT | POOR_RESPONSE | OTHER
-  commentEnc   String?  // encrypted freeform comment
-  contextJson  String?  // conversation context, preview metadata, etc.
-  createdAt    DateTime @default(now())
-  resolvedAt   DateTime?
-  deletedAt    DateTime?
+  id          String    @id @default(cuid())
+  actorId     String
+  messageId   String?
+  rating      Int? // 1 (up), -1 (down)
+  kind        String // thumbs | report
+  issueType   String? // WRONG_RECIPIENT | WRONG_AMOUNT | WRONG_ASSET | MISUNDERSTOOD_INTENT | POOR_RESPONSE | OTHER
+  commentEnc  String? // encrypted freeform comment
+  contextJson String? // conversation context, preview metadata, etc.
+  createdAt   DateTime  @default(now())
+  resolvedAt  DateTime?
+  deletedAt   DateTime?
 
-  actor   AiActor   @relation(fields: [actorId], references: [id], onDelete: Cascade)
+  actor   AiActor    @relation(fields: [actorId], references: [id], onDelete: Cascade)
   message AiMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
 
   @@index([actorId, createdAt])
@@ -224,19 +260,19 @@ model AiFeedback {
 }
 
 model AiMemory {
-  id          String   @id @default(cuid())
-  actorId     String
-  category    String   // RECIPIENT | ASSET_PREF | PATTERN | STYLE | SAFETY | OTHER
-  key         String?  // optional key like "last_recipient"
-  summary     String   // user-visible, editable summary (no secrets)
-  dataJson    String?  // structured payload (recipient/email/etc)
-  confidence  Int      @default(50) // 0..100
-  source      String   @default("explicit") // explicit | inferred | feedback
-  timesUsed   Int      @default(0)
-  lastUsedAt  DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  deletedAt   DateTime?
+  id         String    @id @default(cuid())
+  actorId    String
+  category   String // RECIPIENT | ASSET_PREF | PATTERN | STYLE | SAFETY | OTHER
+  key        String? // optional key like "last_recipient"
+  summary    String // user-visible, editable summary (no secrets)
+  dataJson   String? // structured payload (recipient/email/etc)
+  confidence Int       @default(50) // 0..100
+  source     String    @default("explicit") // explicit | inferred | feedback
+  timesUsed  Int       @default(0)
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
 
   actor AiActor @relation(fields: [actorId], references: [id], onDelete: Cascade)
 
@@ -247,12 +283,12 @@ model AiMemory {
 }
 
 model AiPreference {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   actorId   String
   key       String
   value     String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
   actor AiActor @relation(fields: [actorId], references: [id], onDelete: Cascade)
@@ -262,15 +298,15 @@ model AiPreference {
 }
 
 model AiInteraction {
-  id              String   @id @default(cuid())
-  actorId          String
-  conversationId   String?
-  userMessageId    String?
+  id                 String   @id @default(cuid())
+  actorId            String
+  conversationId     String?
+  userMessageId      String?
   assistantMessageId String?
-  intentJson       String?
-  previewHash      String?
-  outcome          String   @default("UNKNOWN") // SUCCESS | FAILED | ABANDONED | UNKNOWN
-  createdAt        DateTime @default(now())
+  intentJson         String?
+  previewHash        String?
+  outcome            String   @default("UNKNOWN") // SUCCESS | FAILED | ABANDONED | UNKNOWN
+  createdAt          DateTime @default(now())
 
   actor AiActor @relation(fields: [actorId], references: [id], onDelete: Cascade)
 
@@ -279,41 +315,43 @@ model AiInteraction {
 }
 
 model UsageRecord {
-  userId               String   @id
-  sponsoredTxCount     Int      @default(0)
-  sponsoredUsdMicro    BigInt   @default(0)
-  aiRequestCount       Int      @default(0)
-  otpRequestCount      Int      @default(0)
-  swapRequestCount     Int      @default(0)
-  txSimulationCount    Int      @default(0)
-  batchTxCount         Int      @default(0)
-  walletCreationCount  Int      @default(0)
-  voiceRequestCount    Int      @default(0)
-  lastResetAt          DateTime @default(now())
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  userId              String   @id
+  sponsoredTxCount    Int      @default(0)
+  sponsoredUsdMicro   BigInt   @default(0)
+  aiRequestCount      Int      @default(0)
+  otpRequestCount     Int      @default(0)
+  swapRequestCount    Int      @default(0)
+  txSimulationCount   Int      @default(0)
+  batchTxCount        Int      @default(0)
+  walletCreationCount Int      @default(0)
+  voiceRequestCount   Int      @default(0)
+  lastResetAt         DateTime @default(now())
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-/** Per-EOA usage counters — keyed by connected wallet address (lowercase). */
+/**
+ * Per-EOA usage counters — keyed by connected wallet address (lowercase).
+ */
 model WalletUsageRecord {
-  walletAddress        String   @id
-  userId               String?
-  sponsoredTxCount     Int      @default(0)
-  sponsoredUsdMicro    BigInt   @default(0)
-  aiRequestCount       Int      @default(0)
-  otpRequestCount      Int      @default(0)
-  swapRequestCount     Int      @default(0)
-  txSimulationCount    Int      @default(0)
-  batchTxCount         Int      @default(0)
-  walletCreationCount  Int      @default(0)
-  voiceRequestCount    Int      @default(0)
-  signatureRequestCount Int     @default(0)
-  connectionCount      Int      @default(0)
-  lastResetAt          DateTime @default(now())
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  walletAddress         String   @id
+  userId                String?
+  sponsoredTxCount      Int      @default(0)
+  sponsoredUsdMicro     BigInt   @default(0)
+  aiRequestCount        Int      @default(0)
+  otpRequestCount       Int      @default(0)
+  swapRequestCount      Int      @default(0)
+  txSimulationCount     Int      @default(0)
+  batchTxCount          Int      @default(0)
+  walletCreationCount   Int      @default(0)
+  voiceRequestCount     Int      @default(0)
+  signatureRequestCount Int      @default(0)
+  connectionCount       Int      @default(0)
+  lastResetAt           DateTime @default(now())
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   @@index([userId])
 }
@@ -323,14 +361,14 @@ model WalletUsageRecord {
  * Only written when the client has a valid wallet session.
  */
 model WalletInteraction {
-  id             String   @id @default(cuid())
-  userId         String
-  walletAddress  String
-  kind           String   // session | chat | preview | transfer | swap | navigation | signature | other
-  label          String
-  status         String   @default("complete") // pending | complete | failed
-  metadataJson   String?
-  createdAt      DateTime @default(now())
+  id            String   @id @default(cuid())
+  userId        String
+  walletAddress String
+  kind          String // session | chat | preview | transfer | swap | navigation | signature | other
+  label         String
+  status        String   @default("complete") // pending | complete | failed
+  metadataJson  String?
+  createdAt     DateTime @default(now())
 
   @@index([userId, createdAt])
   @@index([walletAddress, createdAt])
@@ -338,16 +376,16 @@ model WalletInteraction {
 }
 
 model UserRiskProfile {
-  userId             String   @id
-  score              Int      @default(50) // 0..100 internal score (hidden)
-  failedTxCount      Int      @default(0)
-  otpVelocityCount   Int      @default(0)
-  failedSignatures   Int      @default(0)
-  walletSwitches     Int      @default(0)
-  suspiciousBatches  Int      @default(0)
-  lastAssessedAt     DateTime @default(now())
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  userId            String   @id
+  score             Int      @default(50) // 0..100 internal score (hidden)
+  failedTxCount     Int      @default(0)
+  otpVelocityCount  Int      @default(0)
+  failedSignatures  Int      @default(0)
+  walletSwitches    Int      @default(0)
+  suspiciousBatches Int      @default(0)
+  lastAssessedAt    DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -365,4 +403,3 @@ model OtpToken {
 
   @@index([email, purpose])
 }
-

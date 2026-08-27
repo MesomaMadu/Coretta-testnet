@@ -13,7 +13,7 @@ const STEPS = [
   },
   {
     title: "Activate Smart Wallet",
-    body: "Tap Activate Smart Wallet after verification. This is your operational account for sponsored transfers.",
+    body: "Tap Activate Smart Wallet after verification. This is your operational account for Arc transfers.",
   },
   {
     title: "Chat with Damian",
@@ -21,7 +21,7 @@ const STEPS = [
   },
   {
     title: "Confirm & sign",
-    body: "Review the preview card, tap Confirm & Sign, then approve in your wallet. Sponsored transactions still require your signature.",
+    body: "Review the preview card, tap Confirm & Sign, then approve the exact intent in your wallet.",
   },
   {
     title: "Track activity",

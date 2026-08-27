@@ -6,16 +6,19 @@ Generated from codebase inspection and automated changes. Items marked verified 
 
 - Fixed landing production build failure caused by remote Google Fonts (Noto SC/JP/Devanagari) — Latin fonts only + system CJK fallbacks.
 - Added root `.npmrc` with `legacy-peer-deps=true` for Circle/Solana peer conflicts.
-- Email login / OTP / Resend paths **disabled** (410) on API; UI email entry points removed from app shell/sidebar/settings.
-- Wallet-only auth remains: `POST /v1/auth/wallet` + ownership signature + smart wallet bind/activate.
+- Added Privy email OTP with `@privy-io/react-auth` and server-side access-token verification through `@privy-io/node`.
+- Wallet auth remains available through `POST /v1/auth/wallet`; ownership and transaction signatures now enforce Arc Testnet chain ID `5042002`.
+- Remit and swap requests require a fresh wallet signature over the exact transaction intent; swap nonces are replay-protected in the current API process.
+- Removed API-startup mass SCA deployment and the authenticated `deploy-all` endpoint; deployment is now explicit and user-scoped.
 - Added production-oriented `config` aliases: `JWT_SECRET` → session, `RPC_URL` → Arc RPC, multi-origin `CORS_ORIGIN`.
 - Structured logging for API errors, remit, swap, paymaster, RPC (secrets redacted).
-- Added `POST /v1/swap` using Circle **App Kit** + Circle wallets adapter; Arc **USDC↔NATIVE** returns `"Already using network gas token."`
+- Added `POST /v1/swap` using Circle **App Kit** + Circle wallets adapter; the Arc Testnet API currently permits only **USDC↔EURC**.
 - Frontend Confirm path calls `/v1/swap` for swap actions; intent parser rejects USDC/native swaps.
 - Remit errors log paymaster/RPC classification; Arc public client uses configured RPC.
 - Updated `.env.example` for production variables (no secrets).
 - Prisma schema documents Postgres switch for production.
 - Root `npm run lint` runs TypeScript package builds (workspace typecheck).
+- Upgraded the landing app to Next.js 16 / React 19.2 and pinned safe same-major transitive versions for Axios, form-data, Hono, nanoid, and ws.
 
 ## 2. Manual configuration required
 
@@ -54,6 +57,9 @@ npm run db:push
 | `CIRCLE_ENTITY_SECRET` | Yes |
 | `CIRCLE_WALLET_SET_ID` | Yes |
 | `KIT_KEY` | Yes for swaps |
+| `PRIVY_APP_ID` | Yes for email login |
+| `PRIVY_APP_SECRET` | Yes for email login; server-only |
+| `PRIVY_JWT_VERIFICATION_KEY` | Optional |
 | `DEV_MODE` | Set `false` in production |
 | `PORT` | Optional (default 3001) |
 
@@ -63,6 +69,7 @@ npm run db:push
 |----------|----------|
 | `NEXT_PUBLIC_API_URL` | Yes (public API HTTPS URL) |
 | `NEXT_PUBLIC_WC_PROJECT_ID` | Yes |
+| `NEXT_PUBLIC_PRIVY_APP_ID` | Yes for email login; public App ID |
 
 Do **not** put Circle/Kit/session secrets in `NEXT_PUBLIC_*`.
 
@@ -71,7 +78,7 @@ Do **not** put Circle/Kit/session secrets in `NEXT_PUBLIC_*`.
 - Point production domain at the frontend.
 - Set `CORS_ORIGIN` to that exact origin (and www variant if needed).
 - Set `NEXT_PUBLIC_API_URL` to the public API base URL.
-- Add the production domain in the WalletConnect Cloud project.
+- Add the production domain in WalletConnect Cloud and Privy's allowed domains.
 
 ### Circle / Arc
 
@@ -112,13 +119,13 @@ npm run db:push
 | Smart wallet activation | **Code present** — **manual E2E** |
 | Remittance `/v1/remit` | **Code present + logging** — **manual E2E** with funded wallet |
 | Swap `/v1/swap` | **Endpoint added** — **manual E2E**; may need Circle-managed wallet |
-| Gas sponsorship (paymaster) | **Code path in chain package** — **manual E2E** |
+| USDC gas payment (paymaster) | **Code path in chain package** — **manual E2E** |
 | Tx hash / explorer URL returned | **Code present** for remit; swap when kit returns hash |
 | No localhost hard requirement | **Uses env** — defaults still localhost for local dev |
 | Production env configured on hosts | **Manual** |
 | PostgreSQL configured | **Manual** (schema still sqlite until you switch) |
 | Backend/frontend deployed | **Manual** |
-| Email auth removed | **Yes (disabled)** |
+| Privy email auth | **Code-ready** — requires dashboard credentials and manual email E2E |
 | Ready for production | **No** — hosting, Postgres, E2E, and key rotation remain |
 
 ## 4. Blocked / incomplete without more information
@@ -128,3 +135,5 @@ npm run db:push
 - Guarantee that **local SCAs** work with **App Kit swaps** (depends on Circle wallet inventory).
 - Dedicated **lint ESLint config** for landing (lint script is TypeScript package builds).
 - Redis-backed **presence** for multi-instance active-user counts.
+- Distributed replay storage (Redis/DB) for swap authorization nonces on multi-instance API deployments.
+- Dependency audit leftovers: Circle's Solana/Ethers transitive tree reports 7 low + 16 moderate findings with no non-breaking upstream fix; Privy's MetaMask/x402 tree reports 10 moderate `uuid` findings. Both scans report **zero high or critical** findings after the upgrades.

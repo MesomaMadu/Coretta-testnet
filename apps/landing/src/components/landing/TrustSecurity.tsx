@@ -14,8 +14,8 @@ const ITEMS = [
   },
   {
     icon: Lock,
-    title: "Sponsored gas",
-    desc: "Circle Paymaster validates every sponsored transfer before execution.",
+    title: "USDC gas fees",
+    desc: "Circle Paymaster validates compatible smart-account fee requests before execution.",
   },
   {
     icon: Shield,

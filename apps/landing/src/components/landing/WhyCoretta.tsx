@@ -14,7 +14,7 @@ import SectionShell from "@/components/shared/SectionShell";
 import { loopSlow, springSmooth } from "@/lib/motion";
 
 const FEATURES = [
-  { icon: Zap, title: "Gasless Transfers", desc: "Send USDC without holding native gas tokens." },
+  { icon: Zap, title: "USDC-first fees", desc: "Send USDC without holding a separate native gas token." },
   { icon: Clock, title: "Sub-second Finality", desc: "Arc settles transfers almost instantly." },
   { icon: Wallet, title: "Smart Wallets", desc: "Accounts appear automatically for every recipient." },
   { icon: EyeOff, title: "Invisible Blockchain", desc: "Users never see chains, gas, or complexity." },

@@ -48,7 +48,44 @@ export type IdentityType = "email" | "phone" | "wallet";
 export interface RemitRequest {
   recipient: { type: IdentityType; value: string };
   amount: string;
+  /** Omitted by older clients and treated as USDC by the API. */
+  asset?: "USDC" | "EURC";
   idempotencyKey: string;
+}
+
+export type TransactionAuthorizationIntent =
+  | {
+      action: "remit";
+      requests: RemitRequest[];
+    }
+  | {
+      action: "swap";
+      tokenIn: "USDC" | "EURC";
+      tokenOut: "USDC" | "EURC";
+      amountIn: string;
+      nonce: string;
+    };
+
+/**
+ * Canonical message signed by an EOA before a transaction request reaches the API.
+ * The embedded intent lets the server verify that the signature authorizes the
+ * exact recipient/amount or swap submitted in the request body.
+ */
+export function buildTransactionAuthorizationMessage(params: {
+  address: string;
+  chainId: number;
+  issuedAt?: string;
+  intent: TransactionAuthorizationIntent;
+}): string {
+  const issuedAt = params.issuedAt ?? new Date().toISOString();
+  return `Authorize Coretta transaction
+
+Wallet: ${params.address}
+Chain ID: ${params.chainId}
+Issued At: ${issuedAt}
+Intent: ${JSON.stringify(params.intent)}
+
+This signature authorizes only the transaction intent above on Arc Testnet.`;
 }
 
 export interface ApiError {

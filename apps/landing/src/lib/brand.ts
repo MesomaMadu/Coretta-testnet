@@ -5,7 +5,7 @@ export const AGENT_NAME = "Damian";
 export const AGENT_TAGLINE = "Your personal remittance copilot";
 
 export const SEO = {
-  title: `${BRAND_NAME} — ${BRAND_TAGLINE}`,
+  title: `${BRAND_NAME}, ${BRAND_TAGLINE}`,
   description:
     "The operating system for intelligent global remittance. Instant, gas-optimized transfers with Damian, your AI copilot.",
   ogTitle: `${BRAND_NAME} — Intelligent Global Remittance`,

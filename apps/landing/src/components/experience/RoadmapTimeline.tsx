@@ -5,7 +5,7 @@ import SectionShell from "@/components/shared/SectionShell";
 
 const PHASES = [
   { phase: "Phase 1", title: "Core setup", items: ["Circle Wallets", "Arc RPC", "USDC transfers"] },
-  { phase: "Phase 2", title: "Gasless infrastructure", items: ["Paymaster", "Sponsorship policy", "Bundler"] },
+  { phase: "Phase 2", title: "USDC fee infrastructure", items: ["Paymaster", "Fee policy", "Bundler"] },
   { phase: "Phase 3", title: "UX layer", items: ["Identity system", "Onboarding", "History"] },
   { phase: "Phase 4", title: "Advanced", items: ["Username sends", "Notifications", "Link transfers"] },
 ] as const;

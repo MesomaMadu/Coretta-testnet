@@ -9,8 +9,10 @@
   "scripts": {
     "build": "npm run build -w @coretta/shared && npm run build -w @coretta/chain && npm run build -w @coretta/db && npm run build -w @coretta/api && npm run build -w @coretta/web && npm run build:landing",
     "build:landing": "npm install --prefix apps/landing --no-audit --no-fund --legacy-peer-deps && npm run build --prefix apps/landing",
-    "lint": "npm run build -w @coretta/shared && npm run build -w @coretta/chain && npm run build -w @coretta/db && npm run build -w @coretta/api && npm run build -w @coretta/web",
-    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @coretta/api\" \"npm run dev -w @coretta/web\"",
+    "typecheck": "npm run build -w @coretta/shared && npm run build -w @coretta/chain && npm run build -w @coretta/db && npm run build -w @coretta/api && npm run build -w @coretta/web",
+    "lint": "npm run typecheck && npm run lint --prefix apps/landing",
+    "test": "npm run build -w @coretta/shared && npm run build -w @coretta/api && node --test tests/authorization.test.mjs tests/damian-memory.test.mjs && node --require ./tests/tsx-preload.cjs ./node_modules/tsx/dist/cli.mjs --tsconfig apps/landing/tsconfig.json --test tests/damian-intent.test.ts",
+    "dev": "concurrently -n api,landing -c blue,green \"npm run dev -w @coretta/api\" \"npm run dev --prefix apps/landing\"",
     "dev:landing": "npm run dev --prefix apps/landing",
     "dev:api": "npm run dev -w @coretta/api",
     "dev:web": "npm run dev -w @coretta/web",
@@ -20,6 +22,7 @@
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
+    "supabase": "^2.116.0",
     "typescript": "^5.8.2"
   },
   "engines": {

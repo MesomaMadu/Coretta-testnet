@@ -82,21 +82,23 @@ export function createArcBundlerClient({
   });
 }
 
-export async function sendUsdcTransferUserOp({
+export async function sendTokenTransferUserOp({
   account,
   client,
   recipient,
   amountMicro,
+  tokenAddress,
 }: {
   account: SmartAccount;
   client: PublicClient;
   recipient: Address;
   amountMicro: bigint;
+  tokenAddress: Address;
 }) {
   const bundlerClient = createArcBundlerClient({ account, client });
   const { erc20Abi } = await import("viem");
-  const usdc = {
-    address: (await import("@coretta/shared")).USDC_ADDRESS as Address,
+  const token = {
+    address: tokenAddress,
     abi: erc20Abi,
   };
 
@@ -104,8 +106,8 @@ export async function sendUsdcTransferUserOp({
     account,
     calls: [
       {
-        to: usdc.address,
-        abi: usdc.abi,
+        to: token.address,
+        abi: token.abi,
         functionName: "transfer",
         args: [recipient, amountMicro],
       },
@@ -117,4 +119,14 @@ export async function sendUsdcTransferUserOp({
     userOpHash: hash,
     transactionHash: receipt.receipt.transactionHash,
   };
+}
+
+export async function sendUsdcTransferUserOp(
+  params: Omit<Parameters<typeof sendTokenTransferUserOp>[0], "tokenAddress">,
+) {
+  const { USDC_ADDRESS } = await import("@coretta/shared");
+  return sendTokenTransferUserOp({
+    ...params,
+    tokenAddress: USDC_ADDRESS as Address,
+  });
 }

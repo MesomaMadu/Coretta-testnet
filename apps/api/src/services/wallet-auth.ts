@@ -1,11 +1,11 @@
 import { verifyMessage, type Hex } from "viem";
-import { normalizeWalletAddress } from "@coretta/shared";
+import { ARC_TESTNET_CHAIN_ID, normalizeWalletAddress } from "@coretta/shared";
 import { loginWithIdentity } from "./auth.js";
 import { trackUsageEvent } from "./limits.js";
 import { createAuditEvent } from "./audit.js";
 import { activateSmartWallet } from "./wallet-binding.js";
 import { recordWalletInteraction } from "./wallet-interactions.js";
-import { ensureCircleScaDeployed } from "./wallet.js";
+import { prisma } from "@coretta/db";
 
 const OWNERSHIP_MESSAGE_RE =
   /Sign this message to verify ownership of your wallet and activate your Coretta session\.\s*\n\s*\nAddress:\s*(0x[a-fA-F0-9]{40})\s*\nChain ID:\s*(\d+)\s*\nIssued At:\s*([^\n]+)/i;
@@ -28,7 +28,7 @@ export function parseOwnershipMessage(message: string): {
   };
 }
 
-export async function authenticateWalletOwnership(params: {
+export async function verifyWalletOwnershipSignature(params: {
   address: string;
   message: string;
   signature: string;
@@ -40,6 +40,9 @@ export async function authenticateWalletOwnership(params: {
   }
   if (normalizeWalletAddress(parsed.address) !== expected) {
     throw new Error("ADDRESS_MISMATCH");
+  }
+  if (parsed.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error("WRONG_CHAIN");
   }
   const age = Date.now() - parsed.issuedAt.getTime();
   if (age < -60_000 || age > MAX_MESSAGE_AGE_MS) {
@@ -55,20 +58,17 @@ export async function authenticateWalletOwnership(params: {
     throw new Error("INVALID_SIGNATURE");
   }
 
-  const { token, user, expiresAt } = await loginWithIdentity("wallet", expected);
+  return expected;
+}
 
-  // Deploy any still-counterfactual Circle SCAs for this user (existing + new).
-  for (const w of user.wallets) {
-    if (w.vendor === "circle_modular" && w.vendorWalletId && w.counterfactual) {
-      await ensureCircleScaDeployed({
-        id: w.id,
-        vendor: w.vendor,
-        vendorWalletId: w.vendorWalletId,
-        scaAddress: w.scaAddress,
-        counterfactual: w.counterfactual,
-      });
-    }
-  }
+export async function authenticateWalletOwnership(params: {
+  address: string;
+  message: string;
+  signature: string;
+}) {
+  const expected = await verifyWalletOwnershipSignature(params);
+
+  const { token, user, expiresAt } = await loginWithIdentity("wallet", expected);
 
   // Bind + activate smart wallet to the connected EOA — email not required.
   const binding = await activateSmartWallet(user.id, expected);
@@ -85,7 +85,7 @@ export async function authenticateWalletOwnership(params: {
   await createAuditEvent({
     actorId: user.id,
     action: "WALLET_OWNERSHIP_VERIFIED",
-    metadata: { address: expected, chainId: parsed.chainId },
+    metadata: { address: expected, chainId: ARC_TESTNET_CHAIN_ID },
   });
 
   await recordWalletInteraction({
@@ -95,7 +95,7 @@ export async function authenticateWalletOwnership(params: {
     label: "Wallet connected and ownership verified",
     status: "complete",
     metadata: {
-      chainId: parsed.chainId,
+      chainId: ARC_TESTNET_CHAIN_ID,
       smartWalletAddress: binding.smartWalletAddress,
     },
   });
@@ -108,5 +108,45 @@ export async function authenticateWalletOwnership(params: {
     smartWalletAddress: binding.smartWalletAddress,
     smartWalletActivated: binding.smartWalletActivated,
     boundPrimaryWallet: binding.boundPrimaryWallet,
+  };
+}
+
+/** Link a verified external wallet as another sign-in method for an existing user. */
+export async function linkWalletIdentity(
+  userId: string,
+  params: { address: string; message: string; signature: string },
+) {
+  const expected = await verifyWalletOwnershipSignature(params);
+  const existing = await prisma.identity.findUnique({
+    where: {
+      type_normalizedValue: { type: "wallet", normalizedValue: expected },
+    },
+  });
+  if (existing && existing.userId !== userId) {
+    throw new Error("WALLET_ALREADY_LINKED");
+  }
+  if (!existing) {
+    await prisma.identity.create({
+      data: {
+        userId,
+        type: "wallet",
+        normalizedValue: expected,
+        verifiedAt: new Date(),
+      },
+    });
+  }
+
+  const binding = await activateSmartWallet(userId, expected);
+  await createAuditEvent({
+    actorId: userId,
+    action: "EXTERNAL_WALLET_LINKED",
+    metadata: { address: expected, chainId: ARC_TESTNET_CHAIN_ID },
+  });
+
+  return {
+    walletAddress: expected,
+    smartWalletAddress: binding.smartWalletAddress,
+    boundPrimaryWallet: binding.boundPrimaryWallet,
+    smartWalletActivated: binding.smartWalletActivated,
   };
 }

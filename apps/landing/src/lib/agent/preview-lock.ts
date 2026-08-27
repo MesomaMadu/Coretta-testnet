@@ -19,6 +19,8 @@ export async function buildLockedPreview(
     receiveAsset: partial.receiveAsset ?? "",
     receiveAmount: partial.receiveAmount ?? "",
     swapRoute: partial.swapRoute ?? "",
+    sponsorship: partial.sponsorship,
+    transactionFee: partial.transactionFee ?? "",
     batch: batchCanonical,
     totalAmount: partial.totalAmount ?? "",
   });
@@ -41,6 +43,8 @@ export async function verifyPreviewIntegrity(
     receiveAsset: preview.receiveAsset ?? "",
     receiveAmount: preview.receiveAmount ?? "",
     swapRoute: preview.swapRoute ?? "",
+    sponsorship: preview.sponsorship,
+    transactionFee: preview.transactionFee ?? "",
     batch: batchCanonical,
     totalAmount: preview.totalAmount ?? "",
   });

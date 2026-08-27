@@ -11,6 +11,9 @@ interface Props {
   onConfirm: () => void;
   onCancel: () => void;
   connected: boolean;
+  walletConnected?: boolean;
+  canTransact?: boolean;
+  requiresWalletSignature?: boolean;
   ownershipVerified?: boolean;
   smartWalletActive?: boolean;
 }
@@ -21,6 +24,9 @@ export default function TransactionPreviewCard({
   onConfirm,
   onCancel,
   connected,
+  walletConnected = false,
+  canTransact = false,
+  requiresWalletSignature = true,
   ownershipVerified = false,
   smartWalletActive = false,
 }: Props) {
@@ -116,6 +122,9 @@ export default function TransactionPreviewCard({
         )}
         {preview.swapRoute && <Row label="Route" value={preview.swapRoute} />}
         <Row label="Network" value={preview.network} />
+        {preview.sponsorship === "user-paid" && preview.transactionFee && (
+          <Row label="Transaction fee" value={preview.transactionFee} />
+        )}
       </dl>
 
       <p className="mt-3 break-all font-mono text-[10px] text-black/40">
@@ -128,15 +137,21 @@ export default function TransactionPreviewCard({
             variant="primary"
             className="flex-1"
             onClick={onConfirm}
-            disabled={!connected}
+            disabled={!canTransact}
           >
             {!connected
-              ? "Connect wallet first"
-              : !ownershipVerified
+              ? "Sign in or connect first"
+              : requiresWalletSignature && !walletConnected
+                ? "Connect wallet first"
+                : requiresWalletSignature && !ownershipVerified
                 ? "Verify ownership first"
                 : !smartWalletActive
                   ? "Activate smart wallet"
-                  : "Confirm & Sign"}
+                  : !canTransact
+                    ? "Preparing account..."
+                    : requiresWalletSignature
+                      ? "Confirm & Sign"
+                      : "Confirm"}
           </Button>
           <Button variant="glass" onClick={onCancel}>
             Cancel
@@ -146,13 +161,13 @@ export default function TransactionPreviewCard({
 
       {phase === "awaiting_signature" && (
         <p className="mt-3 text-center text-xs text-amber-700">
-          Approve in your wallet…
+          {requiresWalletSignature ? "Approve in your wallet…" : "Confirming…"}
         </p>
       )}
 
       {!connected && phase === "preview" && (
         <p className="mt-2 text-center text-xs text-black/45">
-          Connect a wallet on Arc Testnet to enable signing.
+          Sign in with Privy email or connect a wallet to continue.
         </p>
       )}
     </div>

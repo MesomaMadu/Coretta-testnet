@@ -34,25 +34,6 @@ Issued At: ${issuedAt}
 This request will not trigger a blockchain transaction or cost any gas fees.`;
 }
 
-export function buildTransactionAuthMessage(params: {
-  address: string;
-  previewHash: string;
-  action: string;
-  amount: string;
-  asset: string;
-  recipient: string;
-}) {
-  return `Authorize Coretta transaction preview
-
-Action: ${params.action}
-Amount: ${params.amount} ${params.asset}
-Recipient: ${params.recipient}
-Preview Hash: ${params.previewHash}
-Wallet: ${params.address}
-
-This authorization does not execute the transfer. You must approve the transaction in your wallet.`;
-}
-
 export function getOwnershipPromptedAddress(): string | null {
   if (typeof window === "undefined") return null;
   return sessionStorage.getItem(OWNERSHIP_PROMPTED_KEY);

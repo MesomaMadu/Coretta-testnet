@@ -1,42 +1,42 @@
-# Email OTP Configuration Report
+# Privy email authentication
 
-## Required
+Coretta uses Privy's email OTP UI and token service. Privy sends and verifies the code in the browser; the Coretta API independently verifies the resulting Privy access token, fetches the verified email from Privy, and issues its own seven-day Coretta session. The browser-supplied email is never trusted by the API.
 
-| Item | Status |
-|------|--------|
-| Email Provider API Key (`EMAIL_PROVIDER_API_KEY`) | ⚠ Manual Configuration Required |
-| Sender Email Address (`EMAIL_FROM_ADDRESS`) | ⚠ Manual Configuration Required |
-| Domain Verification Status (Resend dashboard) | ⚠ Manual Configuration Required |
-| SMTP/API Configuration | ⚠ Manual Configuration Required — uses Resend HTTP API via `fetch` |
+## Get the credentials
 
-## Environment Variables
+1. Create an application at [dashboard.privy.io](https://dashboard.privy.io/).
+2. Open **Configuration → App settings → Basics**.
+3. Copy the **App ID** and **App Secret**. The App ID is public; the App Secret must exist only on the API host.
+4. Open **User management → Authentication** and enable **Email** as a login method.
+5. Open **Configuration → App settings → Domains** and add `http://localhost:3000` plus each production HTTPS origin.
+6. Recommended: create separate Privy applications for development and production.
 
-| Variable | Status |
-|----------|--------|
-| `EMAIL_PROVIDER_API_KEY` | ⚠ Manual Configuration Required |
-| `EMAIL_FROM_ADDRESS` | ⚠ Manual Configuration Required |
-| `DEV_MODE=true` | ✓ Logs OTP to API server console when provider unset |
+## Environment variables
 
-## API Endpoints
+API (`.env` or the API host's secret store):
 
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /v1/auth/otp/send` | Generate and email 6-digit code |
-| `POST /v1/auth/otp/verify` | Validate code and issue session |
-
-## Security Defaults
-
-- OTP expiration: **5 minutes**
-- Maximum failed attempts: **5**
-- Resend cooldown: **30 seconds**
-- Single-use codes with SHA-256 hashing at rest (in-memory store; use Redis/DB for production)
-
-## Local Development
-
-With `DEV_MODE=true` and no email provider configured, codes are printed to the API server console:
-
-```
-[DEV_MODE OTP] user@example.com → 123456
+```dotenv
+PRIVY_APP_ID=your_app_id
+PRIVY_APP_SECRET=your_app_secret
+# Optional, from App settings → Basics → Verify with key instead
+PRIVY_JWT_VERIFICATION_KEY="-----BEGIN PUBLIC KEY-----..."
 ```
 
-**Do not use this mode in production.**
+Next app (`apps/landing/.env.local` or Vercel):
+
+```dotenv
+NEXT_PUBLIC_PRIVY_APP_ID=your_app_id
+NEXT_PUBLIC_API_URL=http://localhost:3001
+```
+
+Use the same App ID on both sides. Never expose `PRIVY_APP_SECRET` through a `NEXT_PUBLIC_*` variable or commit it.
+
+## Request flow
+
+1. `@privy-io/react-auth` sends the email code and verifies it.
+2. The browser obtains a short-lived Privy access token.
+3. It calls `POST /v1/auth/privy` with `Authorization: Bearer <privy-access-token>`.
+4. `@privy-io/node` validates the token and retrieves the verified Privy email.
+5. Coretta provisions/fetches the account and returns its own session token.
+
+The legacy `/v1/auth/otp/send` and `/v1/auth/otp/verify` routes intentionally return HTTP 410; code delivery now belongs to Privy.

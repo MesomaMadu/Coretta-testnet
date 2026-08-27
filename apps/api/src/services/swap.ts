@@ -5,6 +5,7 @@ import { log } from "../lib/log.js";
 import { trackUsageEvent } from "./limits.js";
 import { createAuditEvent } from "./audit.js";
 import { ARC_EXPLORER } from "@coretta/shared";
+import { prisma } from "@coretta/db";
 
 export type SwapToken = "USDC" | "EURC" | "NATIVE" | "USDT";
 
@@ -106,6 +107,23 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
       wallet: `${req.walletAddress.slice(0, 6)}…${req.walletAddress.slice(-4)}`,
     });
 
+    // Validate liquidity before asking the adapter to approve or execute anything.
+    // The estimate is server-side and its fee details are intentionally not exposed
+    // while Coretta sponsorship is active.
+    const estimate = await kit.estimateSwap({
+      from: {
+        adapter,
+        chain: ARC_CHAIN,
+        address: req.walletAddress,
+      },
+      tokenIn: req.tokenIn,
+      tokenOut: req.tokenOut,
+      amountIn: amount,
+      config: {
+        kitKey: config.kitKey,
+      },
+    });
+
     const result = await kit.swap({
       from: {
         adapter,
@@ -127,6 +145,14 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
     // Prefer EOA for wallet-scoped usage (Usage dashboard queries by connected EOA).
     // Never fall back to SCA — that would write counters under a different key.
     const usageWallet = req.eoaAddress ?? null;
+    await prisma.wallet.updateMany({
+      where: {
+        userId: req.userId,
+        scaAddress: req.walletAddress,
+        counterfactual: true,
+      },
+      data: { counterfactual: false },
+    });
     await trackUsageEvent({
       walletAddress: usageWallet,
       userId: req.userId,
@@ -157,23 +183,30 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
       tokenIn: req.tokenIn,
       tokenOut: req.tokenOut,
       amountIn: amount,
-      amountOut: (result as { amountOut?: string }).amountOut,
+      amountOut: estimate.estimatedOutput.amount,
       txHash,
       explorerUrl: txHash ? `${ARC_EXPLORER}/tx/${txHash}` : undefined,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "SWAP_FAILED";
+    const noRoute = /no route available|route or resource not found/i.test(message);
     log.swap("Swap execution failed", { message });
     await createAuditEvent({
       actorId: req.userId,
       action: "SWAP_FAILED",
-      metadata: { message, tokenIn: req.tokenIn, tokenOut: req.tokenOut },
+      metadata: {
+        message,
+        tokenIn: req.tokenIn,
+        tokenOut: req.tokenOut,
+        amountIn: amount,
+      },
     });
     return {
       ok: false,
-      code: "SWAP_FAILED",
-      message:
-        message.includes("wallet") || message.includes("not found")
+      code: noRoute ? "SWAP_ROUTE_UNAVAILABLE" : "SWAP_FAILED",
+      message: noRoute
+        ? `No ${req.tokenIn} to ${req.tokenOut} liquidity route is available on Arc Testnet right now. Try the reverse direction or retry later.`
+        : message.includes("wallet") || message.includes("not found")
           ? "Swap failed: wallet must be a Circle developer-controlled wallet on Arc Testnet. Local SCAs may not be eligible for App Kit swaps."
           : message,
     };

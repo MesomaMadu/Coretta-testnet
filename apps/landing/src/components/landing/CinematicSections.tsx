@@ -21,7 +21,7 @@ const PILLARS = [
   {
     icon: Network,
     title: "Arc settlement",
-    body: "USDC remittance on Arc Testnet with sub-second finality and sponsored gas.",
+    body: "USDC remittance on Arc Testnet with sub-second finality and USDC-denominated gas.",
   },
   {
     icon: Lock,
@@ -34,7 +34,7 @@ const STEPS = [
   { n: "01", t: "Connect", d: "Browser wallet or WalletConnect on Arc Testnet." },
   { n: "02", t: "Verify", d: "Sign a free ownership message — no gas." },
   { n: "03", t: "Send", d: `Tell ${AGENT_NAME} who and how much. Confirm & sign.` },
-  { n: "04", t: "Settle", d: "Sponsored UserOp lands; track success or failure in Activity." },
+  { n: "04", t: "Settle", d: "The signed operation lands; track success or failure in Activity." },
 ] as const;
 
 export function FeaturePillars() {
@@ -141,7 +141,7 @@ export function TrustStrip() {
           {[
             "Ownership signature before session privileges",
             "Smart wallet bound to your connected EOA",
-            "Circle Paymaster sponsorship on Arc Testnet",
+            "Circle Paymaster USDC fees on Arc Testnet",
             "Activity shows only success or failure outcomes",
           ].map((line) => (
             <li

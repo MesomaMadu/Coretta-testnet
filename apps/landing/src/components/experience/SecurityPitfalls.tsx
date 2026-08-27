@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 const THREATS = [
   {
     id: "paymaster",
-    threat: "Paymaster abuse & sponsorship draining",
-    attack: "Bots spam sponsored UserOperations to drain treasury.",
+    threat: "Paymaster and fee abuse",
+    attack: "Bots spam UserOperations to consume account fee budgets.",
     defense: ["Per-transfer caps ($100)", "Daily velocity limits", "USDC-only calldata allowlists"],
   },
   {
@@ -34,7 +34,7 @@ const THREATS = [
   {
     id: "treasury",
     threat: "Treasury depletion",
-    attack: "Sponsorship burn exceeds refill rate.",
+    attack: "Network-fee spend exceeds the configured budget.",
     defense: ["Treasury monitoring", "Auto-pause on anomaly", "Refill playbooks"],
   },
 ] as const;

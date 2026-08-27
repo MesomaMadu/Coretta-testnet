@@ -1,10 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { apiFetch, getApiToken } from "@/lib/api";
+
+interface PreferredNameServerState {
+  preferredName: string;
+  preferredNameUpdatedAt: string | null;
+  nextPreferredNameEditAt: string | null;
+  canEditPreferredName: boolean;
+}
 
 export interface UserProfile {
   preferredName: string;
+  preferredNameUpdatedAt: number | null;
+  nextPreferredNameEditAt: number | null;
+  canEditPreferredName: boolean;
   onboardingComplete: boolean;
+  onboardingVersion: number;
   linkedEmail: string | null;
   emailVerifiedAt: number | null;
   walletTutorialComplete: boolean;
@@ -15,11 +27,47 @@ const LEGACY_KEY = "Coretta_profile";
 
 const DEFAULT: UserProfile = {
   preferredName: "",
+  preferredNameUpdatedAt: null,
+  nextPreferredNameEditAt: null,
+  canEditPreferredName: true,
   onboardingComplete: false,
+  onboardingVersion: 0,
   linkedEmail: null,
   emailVerifiedAt: null,
   walletTutorialComplete: false,
 };
+
+let preferredNameSync: Promise<PreferredNameServerState | null> | null = null;
+
+function toLocalPreferredNameState(state: PreferredNameServerState) {
+  return {
+    preferredName: state.preferredName,
+    preferredNameUpdatedAt: state.preferredNameUpdatedAt
+      ? new Date(state.preferredNameUpdatedAt).getTime()
+      : null,
+    nextPreferredNameEditAt: state.nextPreferredNameEditAt
+      ? new Date(state.nextPreferredNameEditAt).getTime()
+      : null,
+    canEditPreferredName: state.canEditPreferredName,
+  };
+}
+
+function syncPreferredName(localName: string) {
+  if (preferredNameSync) return preferredNameSync;
+  preferredNameSync = (async () => {
+    if (!getApiToken()) return null;
+    const server = await apiFetch<PreferredNameServerState>("/v1/me/profile");
+    if (server.preferredName || !localName.trim()) return server;
+
+    return apiFetch<PreferredNameServerState>("/v1/me/profile", {
+      method: "PATCH",
+      body: JSON.stringify({ preferredName: localName.trim() }),
+    });
+  })().finally(() => {
+    preferredNameSync = null;
+  });
+  return preferredNameSync;
+}
 
 function load(): UserProfile {
   if (typeof window === "undefined") return DEFAULT;
@@ -39,6 +87,7 @@ function load(): UserProfile {
 function save(profile: UserProfile) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
+    window.dispatchEvent(new CustomEvent<UserProfile>("coretta-profile-updated", { detail: profile }));
   } catch {
     /* ignore */
   }
@@ -47,26 +96,75 @@ function save(profile: UserProfile) {
 export function useProfile() {
   const [profile, setProfile] = useState<UserProfile>(DEFAULT);
   const [hydrated, setHydrated] = useState(false);
-
-  useEffect(() => {
-    setProfile(load());
-    setHydrated(true);
-  }, []);
+  const profileRef = useRef<UserProfile>(DEFAULT);
 
   const update = useCallback((patch: Partial<UserProfile>) => {
-    setProfile((prev) => {
-      const next = { ...prev, ...patch };
-      save(next);
-      return next;
-    });
+    const next = { ...profileRef.current, ...patch };
+    profileRef.current = next;
+    setProfile(next);
+    save(next);
   }, []);
 
+  useEffect(() => {
+    const loaded = load();
+    profileRef.current = loaded;
+    setProfile(loaded);
+    setHydrated(true);
+    const onProfileUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<UserProfile>).detail;
+      if (detail) {
+        profileRef.current = detail;
+        setProfile(detail);
+      }
+    };
+    window.addEventListener("coretta-profile-updated", onProfileUpdated);
+
+    const refreshPreferredName = async () => {
+      try {
+        const state = await syncPreferredName(profileRef.current.preferredName);
+        if (state) update(toLocalPreferredNameState(state));
+      } catch {
+        /* Keep the last locally known state while the API is unavailable. */
+      }
+    };
+
+    window.addEventListener("coretta-api-session-updated", refreshPreferredName);
+    void refreshPreferredName();
+
+    return () => {
+      window.removeEventListener("coretta-profile-updated", onProfileUpdated);
+      window.removeEventListener("coretta-api-session-updated", refreshPreferredName);
+    };
+  }, [update]);
+
   const setPreferredName = useCallback(
-    (name: string) => {
-      update({
-        preferredName: name.trim(),
-        onboardingComplete: true,
-      });
+    async (name: string) => {
+      const preferredName = name.trim();
+      if (!preferredName) throw new Error("Enter a preferred name.");
+      if (!getApiToken()) {
+        throw new Error("Sign in or connect your wallet before saving a preferred name.");
+      }
+
+      try {
+        const state = await apiFetch<PreferredNameServerState>("/v1/me/profile", {
+          method: "PATCH",
+          body: JSON.stringify({ preferredName }),
+        });
+        update({
+          ...toLocalPreferredNameState(state),
+          onboardingComplete: true,
+          onboardingVersion: 1,
+        });
+        return state;
+      } catch (error) {
+        try {
+          const current = await apiFetch<PreferredNameServerState>("/v1/me/profile");
+          update(toLocalPreferredNameState(current));
+        } catch {
+          /* Preserve the original save error. */
+        }
+        throw error;
+      }
     },
     [update],
   );
@@ -86,6 +184,23 @@ export function useProfile() {
     update({ walletTutorialComplete: true });
   }, [update]);
 
+  const completeOnboarding = useCallback(() => {
+    update({
+      onboardingComplete: true,
+      onboardingVersion: 1,
+      walletTutorialComplete: true,
+    });
+  }, [update]);
+
+  const signOutEmail = useCallback(() => {
+    update({
+      onboardingComplete: false,
+      onboardingVersion: 0,
+      linkedEmail: null,
+      emailVerifiedAt: null,
+    });
+  }, [update]);
+
   return {
     profile,
     hydrated,
@@ -94,5 +209,7 @@ export function useProfile() {
     unlinkEmail,
     update,
     skipWalletTutorial,
+    completeOnboarding,
+    signOutEmail,
   };
 }

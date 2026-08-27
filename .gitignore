@@ -1,7 +1,8 @@
 node_modules
 dist
 .env
-.env.local
+.env.*
+!.env.example
 *.db
 *.db-journal
 .DS_Store
@@ -9,6 +10,17 @@ dist
 coverage
 .next
 .vite
+.vercel
+*.tsbuildinfo
+
+# Credentials, signing material, and recovery exports
+recovery/
+ENTITY_SECRET_BACKUP.txt
+*-recovery-file.json
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Local secrets / tooling
 recovery/

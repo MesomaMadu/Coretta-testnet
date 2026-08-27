@@ -6,7 +6,7 @@ import SectionShell from "@/components/shared/SectionShell";
 
 const OPTS = [
   { icon: Layers, title: "Batching", desc: "Aggregate operations where possible to reduce per-tx overhead." },
-  { icon: Gauge, title: "Sponsorship limits", desc: "Hard caps per transfer and per day protect treasury." },
+  { icon: Gauge, title: "Transfer limits", desc: "Hard caps per transfer and per day limit account risk." },
   { icon: Zap, title: "Fast indexing", desc: "Off-chain indexer for instant UI — chain is source of truth." },
 ] as const;
 

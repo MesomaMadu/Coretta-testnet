@@ -38,7 +38,7 @@ function ScreenBalance() {
         <div className="h-px bg-[var(--cine-ui-divider)]" />
         <div className="flex items-center justify-between text-sm">
           <span className="text-[var(--cine-ui-text-muted)]">Gas</span>
-          <span className="font-medium text-[var(--cine-ui-accent)]">Sponsored</span>
+          <span className="font-medium text-[var(--cine-ui-accent)]">USDC fee</span>
         </div>
       </div>
       <div className="mt-auto rounded-2xl bg-[var(--cine-ui-accent)] px-4 py-3 text-center text-sm font-semibold text-white">
@@ -59,7 +59,7 @@ function ScreenSend() {
         {[
           { k: "To", v: "0xA1b2…9f3C" },
           { k: "Network", v: "Arc Testnet" },
-          { k: "Fee", v: "Sponsored" },
+          { k: "Fee", v: "Paid in USDC" },
         ].map((row, i) => (
           <div key={row.k}>
             {i > 0 && <div className="h-px bg-[var(--cine-ui-divider)]" />}
@@ -116,7 +116,7 @@ function ScreenStatus() {
         Transaction successful
       </p>
       <p className="mt-2 max-w-[220px] text-sm text-[var(--cine-ui-text-muted)]">
-        Settled on Arc Testnet with sponsored gas via Circle Paymaster.
+        Settled on Arc Testnet with gas paid in USDC via Circle Paymaster.
       </p>
       <div className="cine-ui-card mt-6 w-full px-4 py-3 text-left text-xs text-[var(--cine-ui-text-muted)]">
         Hash · 0x7f3a…c2e1
@@ -178,7 +178,7 @@ export default function CinematicShowcase() {
           </h1>
           <p className="subheading-text mx-auto mt-5 max-w-md text-base text-[var(--ar-fg-muted)] lg:mx-0">
             {BRAND_NAME} hides the chain. Connect a wallet, talk to {AGENT_NAME}, and settle
-            sponsored transfers on Arc Testnet — almost instantly.
+            USDC transfers on Arc Testnet — almost instantly.
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3 lg:justify-start">
             <Button asChild variant="primary" size="lg" className="gap-2">
@@ -192,7 +192,7 @@ export default function CinematicShowcase() {
           </div>
           <div className="mt-8 flex flex-wrap justify-center gap-4 text-xs text-[var(--ar-fg-subtle)] lg:justify-start">
             <span className="inline-flex items-center gap-1.5">
-              <Zap className="h-3.5 w-3.5 text-[var(--ar-accent-soft)]" /> Gas sponsored
+              <Zap className="h-3.5 w-3.5 text-[var(--ar-accent-soft)]" /> Gas paid in USDC
             </span>
             <span className="inline-flex items-center gap-1.5">
               <Shield className="h-3.5 w-3.5 text-[var(--ar-accent-soft)]" /> Ownership signed

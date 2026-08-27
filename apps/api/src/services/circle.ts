@@ -71,9 +71,9 @@ export async function deployCircleScaOnChain(params: {
     }
 
     // Poll until terminal (same lifecycle as remits)
-    for (let i = 0; i < 45; i++) {
+    for (let i = 0; i < 90; i++) {
       const res = await client.getTransaction({ id: circleTxId });
-      const tx = res.data as
+      const tx = res.data?.transaction as
         | { state?: string; txHash?: string; errorReason?: string }
         | undefined;
       if (!tx) {
@@ -81,6 +81,14 @@ export async function deployCircleScaOnChain(params: {
         continue;
       }
       const state = tx.state ?? "";
+      if (i % 5 === 0) {
+        log.info("circle", "SCA deploy poll", {
+          circleTxId,
+          attempt: i + 1,
+          state,
+          txHash: tx.txHash,
+        });
+      }
       if (state === "COMPLETE") {
         return {
           deployed: true,

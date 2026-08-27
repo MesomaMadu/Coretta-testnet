@@ -1,20 +1,25 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import type { AgentMessage, TransactionPreview } from "@/lib/agent/types";
-import ResponseFeedback from "./ResponseFeedback";
+import type { AgentMessage } from "@/lib/agent/types";
+
+const EMPHASIZED_COPY = "Confirm & Sign";
+
+function renderMessage(content: string) {
+  return content.split(EMPHASIZED_COPY).map((part, index, parts) => (
+    <span key={`${index}-${part.slice(0, 12)}`}>
+      {part}
+      {index < parts.length - 1 ? <strong>{EMPHASIZED_COPY}</strong> : null}
+    </span>
+  ));
+}
 
 export default function ChatBubble({
   message,
-  context,
-  preview,
 }: {
   message: AgentMessage;
-  context: { lastUserMessage?: string };
-  preview?: TransactionPreview | null;
 }) {
   const isUser = message.role === "user";
-  const isAssistant = message.role === "assistant";
   return (
     <div className={cn("flex flex-col", isUser ? "items-end" : "items-start")}>
       <div
@@ -23,18 +28,8 @@ export default function ChatBubble({
           isUser ? "damian-bubble-user" : "damian-bubble-assistant",
         )}
       >
-        {message.content}
+        {renderMessage(message.content)}
       </div>
-      {isAssistant && (
-        <div className="max-w-[85%]">
-          <ResponseFeedback
-            messageId={message.id}
-            serverMessageId={message.serverId}
-            context={context}
-            preview={preview}
-          />
-        </div>
-      )}
     </div>
   );
 }

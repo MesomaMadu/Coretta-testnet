@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useAccount } from "wagmi";
+import { useState } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -9,89 +8,18 @@ import {
   ChevronUp,
   Clock,
   ExternalLink,
+  RefreshCw,
   X,
   XCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getApiToken } from "@/lib/api";
 import {
-  subscribeTransactions,
-  type TransactionRecord,
-} from "@/lib/transaction-store";
-import { useWalletSession } from "@/hooks/useWalletSession";
+  formatAbsoluteTime,
+  formatRelativeTime,
+  useActivityFeed,
+} from "@/hooks/useActivityFeed";
 
 const ARC_EXPLORER = "https://testnet.arcscan.app";
-
-interface ActivityItem {
-  id: string;
-  label: string;
-  status: "pending" | "complete" | "failed";
-  time: string;
-  timestamp?: number;
-  asset?: string;
-  amount?: string;
-  recipient?: string;
-  txHash?: string;
-  failureReason?: string;
-  network?: string;
-  explorerUrl?: string;
-  state?: string;
-}
-
-function formatRelativeTime(ts?: number) {
-  if (!ts) return "Just now";
-  const diff = Date.now() - ts;
-  if (diff < 60_000) return "Just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return new Date(ts).toLocaleDateString();
-}
-
-function formatAbsoluteTime(ts?: number) {
-  if (!ts) return "—";
-  return new Date(ts).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-/** Chatbot remits/swaps only — sourced from AIAgentPanel via transaction-store. */
-function txToItem(tx: TransactionRecord): ActivityItem {
-  const isSwap =
-    /^your wallet$/i.test(tx.recipient.trim()) ||
-    tx.id.startsWith("swap_");
-  const verb = isSwap ? "Swap" : "Send";
-  const action =
-    tx.status === "failed"
-      ? `Failed ${verb}: ${tx.amount} ${tx.asset}`
-      : tx.status === "settled"
-        ? `${verb} ${tx.amount} ${tx.asset}`
-        : `Pending ${verb}: ${tx.amount} ${tx.asset}`;
-  return {
-    id: tx.id,
-    label: action,
-    status:
-      tx.status === "settled"
-        ? "complete"
-        : tx.status === "failed"
-          ? "failed"
-          : "pending",
-    time: formatRelativeTime(tx.timestamp),
-    timestamp: tx.timestamp,
-    asset: tx.asset,
-    amount: tx.amount,
-    recipient: tx.recipient,
-    txHash: tx.txHash,
-    failureReason: tx.failureReason,
-    network: tx.network,
-    explorerUrl: tx.explorerUrl,
-    state: tx.status,
-  };
-}
 
 function DetailRow({
   label,
@@ -142,37 +70,18 @@ interface Props {
   variant?: "sidebar" | "main";
 }
 
-/**
- * Activity = chatbot remits/swaps only (transaction-store from AIAgentPanel).
- * No session/chat/navigation interactions and no separate history merge.
- */
 export default function ActivityPanel({ onClose, variant = "sidebar" }: Props) {
   const isMain = variant === "main";
-  const { address, isConnected } = useAccount();
-  const { verified } = useWalletSession();
-  const [items, setItems] = useState<ActivityItem[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const canShowHistory = Boolean(
-    isConnected && verified && address && getApiToken(),
-  );
-
-  useEffect(() => {
-    if (!canShowHistory) {
-      setItems([]);
-      setExpandedId(null);
-      return;
-    }
-    // Chatbot txs only — success or failure (no pending rows).
-    return subscribeTransactions((records) => {
-      setItems(
-        records
-          .filter((r) => r.status === "settled" || r.status === "failed")
-          .map(txToItem)
-          .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
-          .slice(0, 50),
-      );
-    });
-  }, [canShowHistory]);
+  const {
+    items,
+    identityConnected,
+    hasApiSession,
+    canShowHistory,
+    loading,
+    loadError,
+    refresh,
+  } = useActivityFeed();
 
   return (
     <aside
@@ -189,23 +98,41 @@ export default function ActivityPanel({ onClose, variant = "sidebar" }: Props) {
           <Activity className="h-4 w-4 text-black" />
           Activity
         </h2>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-full p-1 text-black/40 hover:bg-black/5 hover:text-black"
-          aria-label="Close activity panel"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {canShowHistory && (
+            <button
+              type="button"
+              onClick={refresh}
+              className="rounded-full p-1 text-black/40 hover:bg-black/5 hover:text-black"
+              aria-label="Refresh activity"
+              disabled={loading}
+            >
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full p-1 text-black/40 hover:bg-black/5 hover:text-black"
+            aria-label="Close activity panel"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
       <ul className="flex flex-1 flex-col gap-2 overflow-y-auto">
-        {items.length === 0 && (
+        {items.length === 0 && !loading && (
           <li className="rounded-2xl border border-black/10 bg-white px-3 py-6 text-center text-xs text-black/45">
-            {!isConnected
-              ? "Connect your wallet to see activity."
-              : !verified
-                ? "Verify wallet ownership to load chatbot transactions."
-                : "No chatbot transactions yet. Confirm a send or swap with Damian."}
+            {!identityConnected
+              ? "Sign in with email or connect a wallet to see activity."
+              : !hasApiSession
+                ? "Your Coretta session has expired. Sign in again to see activity."
+                : loadError ?? "No transactions yet. Confirm a send or swap with Damian."}
+          </li>
+        )}
+        {loading && items.length === 0 && (
+          <li className="rounded-2xl border border-black/10 bg-white px-3 py-6 text-center text-xs text-black/45">
+            Loading activity…
           </li>
         )}
         {items.map((item) => {
@@ -306,8 +233,8 @@ export default function ActivityPanel({ onClose, variant = "sidebar" }: Props) {
         })}
       </ul>
       <p className="mt-4 text-[10px] text-black/40">
-        Chatbot remits and swaps only (completed or failed). Expand a row for
-        full details.
+        Smart-wallet sends and swaps are saved to your Coretta account. Expand
+        a row for full details.
       </p>
     </aside>
   );

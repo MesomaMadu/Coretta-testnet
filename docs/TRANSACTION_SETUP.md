@@ -22,7 +22,7 @@ Dependencies required for real-time transaction processing in Coretta.
 
 | Dependency | Status | Notes |
 |------------|--------|-------|
-| Sponsorship configuration | ✓ Configured | Circle Paymaster v0.7 on Arc Testnet |
+| USDC fee configuration | ✓ Configured | Circle Paymaster v0.7 on Arc Testnet |
 | USDC permit signing | ✓ Configured | `packages/chain/src/paymaster.ts` |
 
 ## Bundler
@@ -56,41 +56,39 @@ Dependencies required for real-time transaction processing in Coretta.
 |----------|--------|
 | `BUNDLER_RPC_URL` | ⚠ Manual Input Required (recommended production) |
 | `DEV_MODE` | ✓ Optional dev flag |
-| `EMAIL_PROVIDER_API_KEY` | ⚠ Manual Input Required (email OTP) |
-| `EMAIL_FROM_ADDRESS` | ⚠ Manual Input Required (email OTP) |
+| `PRIVY_APP_ID` / `PRIVY_APP_SECRET` | ⚠ Required for email OTP |
+| `NEXT_PUBLIC_PRIVY_APP_ID` | ⚠ Required in the landing app for email OTP |
 | `NEXT_PUBLIC_WC_PROJECT_ID` | ✓ Set in landing `.env.local` |
 
 ## Client Transaction Flow
 
-1. User confirms preview in Damian
-2. Wallet signs ownership authorization message (mandatory, even when sponsored)
-3. API creates and executes remittance via smart wallet + bundler + paymaster
-4. Transaction hash returned immediately when available
-5. Client polls transfer state until `SETTLED` or `FAILED`
-6. Activity tab and in-chat status cards update from shared `transaction-store`
+1. User confirms a transaction preview in the agent
+2. Wallet signs an authorization containing the exact Arc chain ID, recipient/amount (or swap pair/amount), nonce/idempotency key, and issue time
+3. API verifies the signer belongs to the session and that the signed intent matches the request body
+4. API creates and executes the operation through the user's Circle smart wallet
+5. Transaction hash is returned when available
+6. Client polls transfer state until `SETTLED` or `FAILED`
+7. Activity tab and in-chat status cards update from shared `transaction-store`
 
-## Swap (USDC ↔ EURC) — NOT IMPLEMENTED ON-CHAIN
+## Swap (USDC ↔ EURC)
 
-The agent can **preview** swap intents (`swapUSDCtoEURC` / `swapEURCtoUSDC`) but **cannot settle** them.
+The agent previews and submits Arc Testnet swaps through `POST /v1/swap` and Circle App Kit. A Circle Kit Key, Circle-managed wallet, token balance, and an available Arc Testnet liquidity route are still required for a successful end-to-end swap.
 
 | Piece | Status |
 |-------|--------|
-| Intent parser + locked preview UI | ✓ Present (preview only) |
-| `POST /v1/swap` (or equivalent) | ✗ Missing |
-| DEX / router / pool on Arc Testnet | ✗ Not integrated |
-| EURC liquidity route config | ✗ Not configured |
-| Circle Swap Kit wiring | ✗ Not integrated |
-| Usage counter `swapRequestCount` | ✓ Tracks client events only |
+| Intent parser + locked preview UI | ✓ Present |
+| `POST /v1/swap` | ✓ Present; signed-intent authorization required |
+| Circle App Kit / wallets adapter | ✓ Wired server-side |
+| Allowed Arc Testnet pair | ✓ USDC ↔ EURC |
+| Live liquidity / funded wallet | ⚠ Manual E2E prerequisite |
+| Usage counter `swapRequestCount` | ✓ Server-side execution path |
 
 ### Manual inputs required before swaps can execute
 
-1. **Swap router / pool address** on Arc Testnet (or Circle Swap Kit product + credentials)
-2. **EURC token address** confirmation on Arc Testnet (app has a default in `apps/landing/src/lib/chains.ts` — verify against Circle docs)
-3. **Route path** (USDC→EURC pool, fee tier, min-out / slippage policy)
-4. **Funded smart wallet** with source token balance
-5. **RPC**: public `https://rpc.testnet.arc.network` hits rate limits — use a dedicated/key-backed RPC if available
-6. **`BUNDLER_RPC_URL`**: Pimlico (or other) bundler URL with API key for sponsored UserOps
-7. Backend builder: encode swap calldata + (optional) paymaster sponsorship into one UserOp
+1. `KIT_KEY`, Circle API credentials, and the matching Wallet Set
+2. A funded Circle smart wallet with the source token
+3. An available App Kit route/liquidity for the USDC/EURC amount
+4. A dedicated Arc RPC/bundler for production reliability
 
 ### What works today without swap
 
@@ -98,11 +96,9 @@ The agent can **preview** swap intents (`swapUSDCtoEURC` / `swapEURCtoUSDC`) but
 - Smart wallet bound to connected EOA
 - **USDC send** via `POST /v1/remit` to a full `0x` address (or email when email auth works)
 
-## Email Authentication Flow
+## Email authentication flow
 
-1. `POST /v1/auth/otp/send` — delivers 6-digit code (Resend when configured)
-2. `POST /v1/auth/otp/verify` — validates code, issues session token
-3. OTP: 5-minute expiry, 5 max attempts, 30s resend cooldown
+See [`EMAIL_SETUP.md`](./EMAIL_SETUP.md). Privy sends and verifies the email code; `POST /v1/auth/privy` verifies the Privy access token and exchanges it for a Coretta session.
 
 ---
 

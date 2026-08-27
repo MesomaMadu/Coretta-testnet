@@ -88,7 +88,7 @@ export function parseUserIntent(input: string): ParseResult {
         receiveAsset: to,
         receiveAmount: amount,
         swapRoute: `${from} → ${to} (preview only)`,
-        sponsorship: "Circle Paymaster, gas sponsored in USDC",
+        sponsorship: "sponsored",
         network: "Arc Testnet",
         executionPath: "Swap → Smart wallet → Bundler → Arc settlement",
         riskWarning:
@@ -133,7 +133,7 @@ export function parseUserIntent(input: string): ParseResult {
         receiveAsset: to,
         receiveAmount: amount,
         swapRoute: `${from} → ${to}`,
-        sponsorship: "Circle Paymaster, gas sponsored in USDC",
+        sponsorship: "sponsored",
         network: "Arc Testnet",
         executionPath: "App Kit swap on Arc_Testnet",
       },
@@ -165,9 +165,50 @@ export function parseUserIntent(input: string): ParseResult {
         totalAmount: multi.total,
         recipientCount: n,
         riskWarning,
-        sponsorship: "Circle Paymaster, gas sponsored in USDC",
+        sponsorship: "sponsored",
         network: "Arc Testnet",
         executionPath: `Batch → ${n} wallets · ${summary}`,
+      },
+    };
+  }
+
+  const recipientFirstSend =
+    /(?:send|transfer|pay)\s+(.+?)\s+(?:another\s+)?(\d+(?:\.\d+)?)\s*(USDC|EURC)\b/i.exec(
+      text,
+    );
+  if (recipientFirstSend) {
+    const recipientText = recipientFirstSend[1]?.trim().replace(/[.!?]$/, "") ?? "";
+    const amount = parseAmount(recipientFirstSend[2]);
+    const asset = recipientFirstSend[3].toUpperCase() as AssetSymbol;
+    const evm = recipientText.match(/0x[a-fA-F0-9]{40}/i)?.[0];
+    const email = recipientText.match(/[\w.+-]+@[\w.-]+\.\w+/)?.[0];
+    const recipient =
+      evm ||
+      email ||
+      parseRecipient(`to ${recipientText}`) ||
+      (!/^0x/i.test(recipientText) && !recipientText.includes("0x") ? recipientText : null);
+
+    if (!amount) {
+      return { ok: false, reason: "ambiguous", message: "What amount should I send? (Max $100.)" };
+    }
+    if (!recipient) {
+      return {
+        ok: false,
+        reason: "ambiguous",
+        message: "Who is the recipient? Use a full EVM address, email, or saved name.",
+      };
+    }
+
+    return {
+      ok: true,
+      preview: {
+        action: asset === "USDC" ? "sendUSDC" : "sendEURC",
+        recipient,
+        amount,
+        asset,
+        sponsorship: "sponsored",
+        network: "Arc Testnet",
+        executionPath: "Smart wallet -> Paymaster -> Bundler -> Arc",
       },
     };
   }
@@ -214,7 +255,7 @@ export function parseUserIntent(input: string): ParseResult {
         recipient,
         amount,
         asset,
-        sponsorship: "Circle Paymaster, gas sponsored in USDC",
+        sponsorship: "sponsored",
         network: "Arc Testnet",
         executionPath: "Smart wallet → Paymaster → Bundler → Arc",
       },
@@ -235,7 +276,7 @@ export function parseUserIntent(input: string): ParseResult {
         recipient,
         amount,
         asset: "EURC",
-        sponsorship: "Circle Paymaster, gas sponsored in USDC",
+        sponsorship: "sponsored",
         network: "Arc Testnet",
         executionPath: "Smart wallet → Paymaster → Bundler → Arc",
       },

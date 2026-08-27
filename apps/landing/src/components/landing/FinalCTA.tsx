@@ -38,7 +38,7 @@ export default function FinalCTA() {
           <span className="text-white/70">is already here.</span>
         </h2>
         <p className="relative mx-auto mt-4 max-w-lg text-white/50">
-          Instant. Gasless. Invisible.
+          Instant. USDC-first. Invisible.
         </p>
         <div className="relative mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row">
           <Button variant="glow" size="lg" asChild>

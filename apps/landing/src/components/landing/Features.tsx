@@ -7,8 +7,8 @@ import { fadeUpItem, staggerContainer } from "@/lib/motion";
 const ITEMS = [
   {
     icon: Zap,
-    title: "Gasless transfers",
-    desc: "Send USDC on Arc with Circle Paymaster sponsorship — no native ETH for users.",
+    title: "No native gas token",
+    desc: "Send USDC on Arc and pay compatible smart-account network fees in USDC — no native ETH required.",
   },
   {
     icon: Bot,

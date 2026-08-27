@@ -11,7 +11,7 @@ const SCRIPT = [
   { role: "user" as const, text: "Send 75 USDC to david@email.com" },
   {
     role: "assistant" as const,
-    text: "Here's your locked preview: 75 USDC → david@email.com on Arc Testnet. Gas sponsored by Circle Paymaster.",
+    text: "Here's your locked preview: 75 USDC → david@email.com on Arc Testnet. Network fees are paid in USDC.",
   },
   { role: "user" as const, text: "Confirm" },
   {

@@ -63,7 +63,7 @@ export default function ExperienceEntry() {
         transition={{ delay: 0.5 }}
         className="mt-6 max-w-xl text-white/50"
       >
-        Explore how smart wallets, gas sponsorship, execution, and Arc work together —
+        Explore how smart wallets, USDC gas fees, execution, and Arc work together —
         without touching blockchain complexity.
       </motion.p>
 

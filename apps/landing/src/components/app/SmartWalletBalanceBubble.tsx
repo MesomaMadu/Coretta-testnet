@@ -6,6 +6,7 @@ import { apiFetch, getApiToken } from "@/lib/api";
 import { readContract } from "viem/actions";
 import { createPublicClient, http, formatUnits, type Address } from "viem";
 import { useAccount } from "wagmi";
+import { useWalletSession } from "@/hooks/useWalletSession";
 import { arcTestnet, USDC_ADDRESS, EURC_ADDRESS } from "@/lib/chains";
 import { cn } from "@/lib/utils";
 
@@ -36,6 +37,7 @@ async function readTokenBalance(token: Address, holder: Address) {
 
 export function useWalletBalances() {
   const { address, isConnected } = useAccount();
+  const { emailOnlyMode, smartWalletAddress } = useWalletSession();
   const [usdc, setUsdc] = useState<string | null>(null);
   const [eurc, setEurc] = useState<string | null>(null);
   const [smartAddress, setSmartAddress] = useState<string | null>(null);
@@ -49,12 +51,13 @@ export function useWalletBalances() {
   }, []);
 
   const refresh = useCallback(async () => {
-    if (!isConnected || !address) {
+    if (!emailOnlyMode && (!isConnected || !address)) {
       clear();
       return;
     }
 
-    let sca: Address | null = null;
+    let sca: Address | null = smartWalletAddress as Address | null;
+    if (sca) setSmartAddress(sca);
     const token = getApiToken();
     if (token) {
       try {
@@ -71,7 +74,11 @@ export function useWalletBalances() {
       }
     }
 
-    const holder = (sca ?? (address as Address)) as Address;
+    const holder = sca ?? (address as Address | undefined);
+    if (!holder) {
+      clear();
+      return;
+    }
 
     try {
       const [usdcBal, eurcBal] = await Promise.all([
@@ -86,16 +93,23 @@ export function useWalletBalances() {
       setUsdc(null);
       setEurc(null);
     }
-  }, [address, isConnected, clear]);
+  }, [address, isConnected, emailOnlyMode, smartWalletAddress, clear]);
 
   useEffect(() => {
     void refresh();
-    if (!isConnected || !address) return;
+    if (!emailOnlyMode && (!isConnected || !address)) return;
     const id = window.setInterval(() => void refresh(), 15_000);
     return () => window.clearInterval(id);
-  }, [refresh, isConnected, address]);
+  }, [refresh, isConnected, address, emailOnlyMode]);
 
-  return { usdc, eurc, smartAddress, updatedAt, refresh, isConnected };
+  return {
+    usdc,
+    eurc,
+    smartAddress,
+    updatedAt,
+    refresh,
+    isConnected: emailOnlyMode || isConnected,
+  };
 }
 
 /**

@@ -101,7 +101,7 @@ export default function HaloHero() {
             style={{ fontFamily: "'Inter', ui-sans-serif, system-ui, sans-serif" }}
           >
             {BRAND_NAME} is an automated, reward-aware digital dollar stack for
-            gasless USDC remittance on Arc Testnet, powered by {AGENT_NAME},
+            USDC-first remittance on Arc Testnet, powered by {AGENT_NAME},
             your AI copilot.
           </p>
 

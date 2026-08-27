@@ -28,7 +28,7 @@ export default function ExperienceCTA() {
         />
 
         <h2 className="relative text-3xl font-bold text-white md:text-5xl">
-          Instant. Gasless. Invisible.
+          Instant. USDC-first. Invisible.
         </h2>
         <p className="relative mx-auto mt-4 max-w-lg text-white/50">
           Coretta removes blockchain complexity completely.

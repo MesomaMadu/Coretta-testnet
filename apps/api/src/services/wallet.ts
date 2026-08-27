@@ -5,7 +5,7 @@ import {
   getUsdcBalanceMicro,
 } from "@coretta/chain";
 import { generatePrivateKey } from "viem/accounts";
-import type { Hex } from "viem";
+import type { Address, Hex } from "viem";
 import { config } from "../config.js";
 import { encryptPrivateKey } from "../lib/crypto.js";
 import {
@@ -48,6 +48,24 @@ export async function ensureCircleScaDeployed(wallet: {
     return { deployed: true };
   }
 
+  try {
+    const code = await client.getCode({
+      address: wallet.scaAddress as Address,
+    });
+    if (code && code !== "0x") {
+      await prisma.wallet.update({
+        where: { id: wallet.id },
+        data: { counterfactual: false },
+      });
+      return { deployed: true };
+    }
+  } catch (error) {
+    log.error("wallet", "Could not verify SCA deployment state on Arc", {
+      walletId: wallet.id,
+      error: error instanceof Error ? error.message : "RPC_CHECK_FAILED",
+    });
+  }
+
   const result = await deployCircleScaOnChain({
     vendorWalletId: wallet.vendorWalletId,
     scaAddress: wallet.scaAddress,
@@ -78,66 +96,6 @@ export async function ensureCircleScaDeployed(wallet: {
     error: result.error,
   });
   return { deployed: false, error: result.error };
-}
-
-/** Deploy every Circle SCA in the DB that is still counterfactual. */
-export async function deployAllCounterfactualCircleScas() {
-  const wallets = await prisma.wallet.findMany({
-    where: {
-      vendor: "circle_modular",
-      vendorWalletId: { not: null },
-      counterfactual: true,
-      status: "ACTIVE",
-    },
-  });
-
-  const results: Array<{
-    walletId: string;
-    scaAddress: string;
-    deployed: boolean;
-    txHash?: string;
-    error?: string;
-  }> = [];
-
-  for (const w of wallets) {
-    const r = await ensureCircleScaDeployed({
-      id: w.id,
-      vendor: w.vendor,
-      vendorWalletId: w.vendorWalletId,
-      scaAddress: w.scaAddress,
-      counterfactual: w.counterfactual,
-    });
-    results.push({
-      walletId: w.id,
-      scaAddress: w.scaAddress,
-      deployed: r.deployed,
-      txHash: r.txHash,
-      error: r.error,
-    });
-  }
-
-  return {
-    total: wallets.length,
-    deployed: results.filter((r) => r.deployed).length,
-    failed: results.filter((r) => !r.deployed).length,
-    results,
-  };
-}
-
-/**
- * Full reset of Circle SCA deployment flags, then re-deploy all.
- * Marks every circle_modular wallet counterfactual=true, then attempts on-chain deploy.
- */
-export async function resetAndDeployAllCircleScas() {
-  await prisma.wallet.updateMany({
-    where: {
-      vendor: "circle_modular",
-      vendorWalletId: { not: null },
-      status: "ACTIVE",
-    },
-    data: { counterfactual: true },
-  });
-  return deployAllCounterfactualCircleScas();
 }
 
 function normalizeIdentity(type: IdentityType, value: string): string {
@@ -243,17 +201,6 @@ export async function provisionUserWithWallet(
       }),
     },
   });
-
-  // Deploy Circle SCA on-chain immediately after create (best-effort).
-  if (vendor === "circle_modular" && vendorWalletId && user.wallets[0]) {
-    const deploy = await ensureCircleScaDeployed(user.wallets[0]);
-    if (deploy.deployed) {
-      return prisma.user.findUniqueOrThrow({
-        where: { id: user.id },
-        include: { wallets: true, limits: true, identities: true },
-      });
-    }
-  }
 
   return user;
 }

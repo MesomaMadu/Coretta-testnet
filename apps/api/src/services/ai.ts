@@ -20,6 +20,15 @@ export function assertNoSecrets(text: string) {
   }
 }
 
+export function redactAiSummary(text: string) {
+  return text
+    .replace(/0x[a-fA-F0-9]{40}/g, "[wallet address]")
+    .replace(/[\w.+-]+@[\w.-]+\.\w+/g, "[email address]")
+    .replace(/\b(?:\+?\d[\d\s().-]{7,}\d)\b/g, "[phone number]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~-]+\b/gi, "[auth token]")
+    .slice(0, 300);
+}
+
 export async function getOrCreateActorForUser(userId: string) {
   const actorHash = hashAiActor(userId, config.aiMemoryKey);
   const existing = await prisma.aiActor.findUnique({ where: { actorHash } });
@@ -34,16 +43,20 @@ export async function getOrCreateActorForUser(userId: string) {
 }
 
 export async function ensureDefaultPreferences(actorId: string) {
-  await prisma.aiPreference.upsert({
-    where: { actorId_key: { actorId, key: "memoryEnabled" } },
-    update: {},
-    create: { actorId, key: "memoryEnabled", value: "true" },
-  });
-  await prisma.aiPreference.upsert({
-    where: { actorId_key: { actorId, key: "personalizationEnabled" } },
-    update: {},
-    create: { actorId, key: "personalizationEnabled", value: "true" },
-  });
+  await Promise.all(
+    [
+      ["memoryEnabled", "true"],
+      ["personalizationEnabled", "true"],
+      ["transactionHistoryEnabled", "false"],
+      ["savedRecipientsEnabled", "false"],
+    ].map(([key, value]) =>
+      prisma.aiPreference.upsert({
+        where: { actorId_key: { actorId, key } },
+        update: {},
+        create: { actorId, key, value },
+      }),
+    ),
+  );
 }
 
 export async function getPreferences(actorId: string) {
@@ -174,6 +187,17 @@ export async function createMessage(params: {
   clientMessageId?: string;
 }) {
   assertNoSecrets(params.content);
+  if (params.conversationId) {
+    const conversation = await prisma.aiConversation.findFirst({
+      where: {
+        id: params.conversationId,
+        actorId: params.actorId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+    if (!conversation) throw new Error("AI_CONVERSATION_NOT_FOUND");
+  }
   const contentEnc = encryptText(params.content, config.aiMemoryKey);
   return prisma.aiMessage.create({
     data: {
@@ -181,7 +205,7 @@ export async function createMessage(params: {
       conversationId: params.conversationId ?? null,
       role: params.role,
       contentEnc,
-      contentSummary: params.contentSummary,
+      contentSummary: redactAiSummary(params.contentSummary ?? params.content),
       clientMessageId: params.clientMessageId,
     },
   });
@@ -203,6 +227,13 @@ export async function createFeedback(params: {
   contextJson?: string | null;
 }) {
   if (params.comment) assertNoSecrets(params.comment);
+  if (params.messageId) {
+    const message = await prisma.aiMessage.findFirst({
+      where: { id: params.messageId, actorId: params.actorId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!message) throw new Error("AI_MESSAGE_NOT_FOUND");
+  }
   const commentEnc = params.comment
     ? encryptText(params.comment, config.aiMemoryKey)
     : null;

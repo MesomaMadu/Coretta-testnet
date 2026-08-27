@@ -5,7 +5,7 @@ import { fadeUpItem, staggerContainer } from "@/lib/motion";
 
 const STEPS = [
   { n: "01", title: "Describe your transfer", body: "Tell the AI who to pay and how much in plain language." },
-  { n: "02", title: "Review locked preview", body: "See recipient, asset, amount, and gas sponsorship before you sign." },
+  { n: "02", title: "Review locked preview", body: "See recipient, asset, amount, and fee path before you sign." },
   { n: "03", title: "Confirm in your wallet", body: "Approve on Arc Testnet. Funds move only after explicit consent." },
 ] as const;
 

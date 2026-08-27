@@ -29,7 +29,7 @@ export default function HaloDamianSection() {
             </p>
             <p className="mt-4 max-w-md text-base leading-relaxed text-black/65">
               Nothing is autonomous. You always confirm and sign in your wallet. Gas on Arc
-              Testnet can be sponsored, so you focus on who to pay and how much.
+              Arc uses USDC for gas, so you focus on who to pay and how much.
             </p>
             <Link
               href="/app"

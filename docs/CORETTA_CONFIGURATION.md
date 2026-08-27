@@ -2,14 +2,14 @@
 
 Generated for developer setup. Values marked **Configured** were detected in the repository or environment examples. Values marked **Manual Input Required** must be supplied before production use.
 
-## Email OTP
+## Privy email OTP
 
 | Item | Status |
 |------|--------|
-| `EMAIL_PROVIDER_API_KEY` (Resend) | ⚠ Manual Input Required |
-| `EMAIL_FROM_ADDRESS` | ⚠ Manual Input Required |
-| Domain verification (Resend dashboard) | ⚠ Manual Input Required |
-| `DEV_MODE=true` (logs OTP to API console) | ✓ Available for local dev |
+| `PRIVY_APP_ID` (API) | ⚠ Manual Input Required |
+| `PRIVY_APP_SECRET` (API, secret) | ⚠ Manual Input Required |
+| `NEXT_PUBLIC_PRIVY_APP_ID` (landing) | ⚠ Manual Input Required |
+| Privy allowed domains | ⚠ Add localhost and production HTTPS origins |
 
 ## Wallet Infrastructure
 
