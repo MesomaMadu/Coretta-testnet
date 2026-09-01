@@ -2795,7 +2795,14 @@ export async function registerRoutes(app: FastifyInstance) {
       data: { status: "SWAP_SETTLED", swapTxHash: swap.txHash },
     });
 
-    const remittances = [];
+    const remittances: Array<{
+      transferId: string | null;
+      state: string;
+      approvalId?: string;
+      reason?: string | null;
+      txHash?: string | null;
+      explorerUrl?: string;
+    }> = [];
     for (const request of body.requests) {
       try {
         const transfer = await createRemittance({
