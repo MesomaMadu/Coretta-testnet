@@ -1,4 +1,4 @@
-import type { User, Wallet, Identity, UserLimit } from "@prisma/client";
+import type { User, Wallet, Identity, UserLimit } from "@coretta/db";
 
 export type AuthUser = User & {
   wallets: Wallet[];

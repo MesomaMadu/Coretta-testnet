@@ -114,7 +114,7 @@ test("account wallet placeholders resolve only from authenticated account bindin
     }),
     { ok: false, reason: "linked_wallet_missing" },
   );
-  assert.equal(displayAccountWalletRecipient(BOUND_SMART_WALLET), "your Coretta smart wallet");
+  assert.equal(displayAccountWalletRecipient(BOUND_SMART_WALLET), "smart wallet");
   assert.equal(displayAccountWalletRecipient(BOUND_MAIN_WALLET), "your linked external wallet");
 });
 
@@ -209,6 +209,19 @@ test("Damian recognizes the exact single-recipient CCTP phrases used in the app"
   assert.equal(complete.preview.destinationChain, "Base_Sepolia");
   assert.equal(complete.preview.recipient, address);
   assert.equal(complete.preview.amount, "5");
+});
+
+test("transaction phrasing that starts with help reaches the bridge parser", () => {
+  const phrase = "help me bridge 2 usdc to polygon amoy on my wallet";
+  assert.equal(answerDamianProductQuestion(phrase), null);
+
+  const result = parseUserIntent(phrase);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.preview.action, "bridgeUSDC");
+  assert.equal(result.preview.destinationChain, "Polygon_Amoy_Testnet");
+  assert.equal(result.preview.recipient, BOUND_SMART_WALLET);
+  assert.equal(result.preview.steps?.[0]?.detail, "Mint to smart wallet");
 });
 
 test("CCTP batches support equal, fixed-each, custom, and percentage allocations", () => {

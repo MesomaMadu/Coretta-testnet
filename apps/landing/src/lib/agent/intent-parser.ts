@@ -19,6 +19,7 @@ import {
   accountWalletPlaceholderFromText,
   BOUND_MAIN_WALLET,
   BOUND_SMART_WALLET,
+  displayAccountWalletRecipient,
 } from "./wallet-recipient";
 
 function parseAmount(raw: string): string | null {
@@ -276,7 +277,9 @@ export function parseUserIntent(input: string, previous?: TransactionDraft | nul
         {
           id: "bridge",
           label: `Bridge USDC to ${cctpDestination.label}`,
-          detail: recipient ? `Mint to ${recipient}` : "Recipient required",
+          detail: recipient
+            ? `Mint to ${displayAccountWalletRecipient(recipient)}`
+            : "Recipient required",
           kind: "bridge",
         },
       ],
@@ -470,7 +473,7 @@ export function parseUserIntent(input: string, previous?: TransactionDraft | nul
           {
             id: "bridge",
             label: `Bridge USDC to ${cctpDestination.label}`,
-            detail: `Mint to ${recipient}`,
+            detail: `Mint to ${displayAccountWalletRecipient(recipient)}`,
             kind: "bridge",
           },
         ],

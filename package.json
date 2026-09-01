@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
+    "prisma": "6.12.0",
     "supabase": "^2.116.0",
     "typescript": "^5.8.2"
   },
@@ -30,6 +31,7 @@
   },
   "dependencies": {
     "@circle-fin/developer-controlled-wallets": "10.8.0",
+    "@prisma/client": "6.12.0",
     "rpc-websockets": "9.3.10"
   },
   "overrides": {

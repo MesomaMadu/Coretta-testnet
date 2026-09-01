@@ -42,7 +42,7 @@ export function accountWalletPlaceholderFromText(
 }
 
 export function displayAccountWalletRecipient(value: string): string {
-  if (value === BOUND_SMART_WALLET) return "your Coretta smart wallet";
+  if (value === BOUND_SMART_WALLET) return "smart wallet";
   if (value === BOUND_MAIN_WALLET) return "your linked external wallet";
   return value;
 }

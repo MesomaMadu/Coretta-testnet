@@ -1,4 +1,5 @@
-const CAPABILITY_WORDS = /\b(?:capabilit(?:y|ies)|help|what\s+can\s+you|what\s+do\s+you|supported\s+(?:actions?|features?))\b/i;
+const CAPABILITY_WORDS = /\b(?:capabilit(?:y|ies)|what\s+can\s+you|what\s+do\s+you|supported\s+(?:actions?|features?))\b/i;
+const HELP_REQUEST = /^(?:help|help\s+me|show(?:\s+me)?\s+help|help\s+menu|how\s+can\s+you\s+help(?:\s+me)?|what\s+can\s+you\s+help(?:\s+me)?\s+with)[!?.\s]*$/i;
 const ROUTE_WORDS = /\b(?:(?:available|supported|current)\s+(?:routes?|networks?|chains?|assets?|tokens?|destinations?)|chain\s+routes?|routing|which\s+chains?|what(?:\s+are\s+the)?\s+(?:networks?|chains?|routes?|destinations?)|cctp\s+(?:routes?|networks?|chains?|destinations?)|where\s+can\s+(?:i|we)\s+bridge)\b/i;
 const RECEIVE_WORDS = /\b(?:receive|receiving|incoming|payment\s+requests?|accept|reject)\b/i;
 const GREETING_WORDS = /^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[!.\s]*$/i;
@@ -65,7 +66,7 @@ export function answerDamianProductQuestion(input: string): string | null {
   if (RECEIVE_WORDS.test(text) && /\b(?:how|can|show|check|manage|handle|about|explain|do)\b/i.test(text)) {
     return "When a Coretta payment request arrives, I'll show you who sent it, the amount, and Accept or Reject. Accepting triggers one more policy check before anything is submitted on-chain. A direct transfer that has already landed from outside Coretta can't be rejected, so I'll show it as received instead.";
   }
-  if (CAPABILITY_WORDS.test(text)) {
+  if (CAPABILITY_WORDS.test(text) || HELP_REQUEST.test(text)) {
     return [
       "I can help with these tasks:",
       "1. Check USDC and EURC balances.",

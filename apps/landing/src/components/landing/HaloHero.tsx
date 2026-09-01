@@ -100,7 +100,7 @@ export default function HaloHero() {
             className="mb-8 max-w-md text-base leading-relaxed text-black/70 md:text-lg"
             style={{ fontFamily: "'Inter', ui-sans-serif, system-ui, sans-serif" }}
           >
-            {BRAND_NAME} coordinates USDC and EURC payments on Arc Testnet.
+            {BRAND_NAME} coordinates USDC and EURC payments on Arc Testnet.{" "}
             {AGENT_NAME} turns plain language into locked previews for you to approve.
           </p>
 

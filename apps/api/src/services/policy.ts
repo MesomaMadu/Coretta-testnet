@@ -4,7 +4,7 @@ import {
   DEFAULT_DAILY_TX_LIMIT,
   parseUsdcToMicro,
 } from "@coretta/shared";
-import type { UserLimit } from "@prisma/client";
+import type { UserLimit } from "@coretta/db";
 
 export interface PolicyInput {
   amount: string;

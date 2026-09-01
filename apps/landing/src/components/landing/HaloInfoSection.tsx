@@ -30,9 +30,9 @@ export default function HaloInfoSection() {
             </Link>
           </div>
           <p className="text-2xl leading-relaxed text-black/70 md:text-3xl">
-            Your balances stay onchain in the wallet tied to your account. {AGENT_NAME}
-            prepares sends, swaps, USDC bridges, and batch payments while {BRAND_NAME}
-            records approvals, status, and receipts.
+            Your balances stay onchain in the wallet tied to your account.{" "}
+            {AGENT_NAME} prepares sends, swaps, USDC bridges, and batch payments while{" "}
+            {BRAND_NAME} records approvals, status, and receipts.
           </p>
         </div>
 

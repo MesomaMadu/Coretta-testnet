@@ -78,4 +78,12 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 export { PrismaClient };
-export type { User, Wallet, Transfer, Identity, Session } from "@prisma/client";
+export type {
+  User,
+  Wallet,
+  Transfer,
+  Identity,
+  Session,
+  UserLimit,
+  Prisma,
+} from "@prisma/client";

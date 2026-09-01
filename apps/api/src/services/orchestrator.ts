@@ -25,7 +25,7 @@ import { log } from "../lib/log.js";
 import { config } from "../config.js";
 import { trackUsageEvent } from "./limits.js";
 import { createUserNotification } from "./approvals.js";
-import type { Prisma } from "@prisma/client";
+import type { Prisma } from "@coretta/db";
 
 const client = createArcPublicClient(config.arcRpcUrl);
 const circleReconciliationJobs = new Map<string, Promise<void>>();
