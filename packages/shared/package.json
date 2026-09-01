@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./damian-security": {
+      "types": "./dist/damian-security.d.ts",
+      "import": "./dist/damian-security.js"
     }
   },
   "scripts": {

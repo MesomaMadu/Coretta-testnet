@@ -18,6 +18,10 @@ import {
   getDeveloperDiagnosticsEnabled,
   setDeveloperDiagnosticsEnabled,
 } from "@/lib/developer-diagnostics";
+import {
+  CCTP_EVM_TESTNET_DESTINATIONS,
+  supportsCctpScaDestination,
+} from "@coretta/shared";
 
 interface Props {
   onConnectWallet: () => void;
@@ -50,7 +54,6 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
   const [emailLogoutError, setEmailLogoutError] = useState<string | null>(null);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
 
-  const [settlementPref, setSettlementPref] = useState("arc");
   const [feeAssetPref, setFeeAssetPref] = useState("usdc");
   const [advancedShowRoutes, setAdvancedShowRoutes] = useState(true);
   const [advancedShowBundler, setAdvancedShowBundler] = useState(false);
@@ -181,32 +184,25 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
       <div className="mx-auto w-full max-w-xl space-y-5">
         {activeTab === "networks" ? (
           <>
-            <SettingsCard title="Settlement Preference" variants={fadeUpItem}>
-              <div className="space-y-2 text-sm text-black/80">
-                {[
-                  { id: "arc", label: "Arc (default, USDC gas)" },
-                  { id: "auto", label: "Automatic (optimal routing)" },
-                  { id: "ethereum", label: "Ethereum Sepolia (unsupported)" },
-                  { id: "base", label: "Base Sepolia (unsupported)" },
-                  { id: "arbitrum", label: "Arbitrum Sepolia (unsupported)" },
-                  { id: "optimism", label: "Optimism Sepolia (unsupported)" },
-                  { id: "polygon", label: "Polygon Amoy (unsupported)" },
-                  { id: "avalanche", label: "Avalanche Fuji (unsupported)" },
-                ].map((item) => (
-                  <label key={item.id} className="flex cursor-pointer items-center gap-3 py-1">
-                    <input
-                      type="radio"
-                      name="settlement"
-                      value={item.id}
-                      checked={settlementPref === item.id}
-                      onChange={(e) => setSettlementPref(e.target.value)}
-                      className="accent-black"
-                    />
-                    <span className={item.id === "arc" ? "font-semibold text-black" : "text-black/55"}>
-                      {item.label}
-                    </span>
-                  </label>
-                ))}
+            <SettingsCard title="Supported Networks" variants={fadeUpItem}>
+              <div className="space-y-5 text-sm text-black/80">
+                <p className="text-xs leading-5 text-black/55">
+                  Arc Testnet is the source. Every network below supports USDC bridging from Arc.
+                </p>
+                <NetworkSupportGroup
+                  title="Coretta smart wallet"
+                  description="Circle can create your Coretta smart wallet on these networks. You can say “my wallet” in Damian."
+                  networks={CCTP_EVM_TESTNET_DESTINATIONS.filter((network) =>
+                    supportsCctpScaDestination(network.id),
+                  ).map((network) => network.label)}
+                />
+                <NetworkSupportGroup
+                  title="External EVM wallet"
+                  description="These routes work with a full EVM address. Circle cannot create your Coretta smart wallet on these networks yet."
+                  networks={CCTP_EVM_TESTNET_DESTINATIONS.filter(
+                    (network) => !supportsCctpScaDestination(network.id),
+                  ).map((network) => network.label)}
+                />
               </div>
             </SettingsCard>
 
@@ -360,10 +356,10 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
                     {t("disconnectWallet")}
                   </Button>
                   <Button variant="ghost" size="sm" className="w-full" onClick={onConnectWallet}>
-                    Switch wallet
+                    Link or replace wallet
                   </Button>
                   <p className="text-[10px] text-black/40">
-                    To replace the bound wallet, disconnect it and connect the new wallet.
+                    A new wallet must sign an ownership message and link to this Coretta account before it can be used.
                   </p>
                 </div>
               ) : (
@@ -377,7 +373,7 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
                     </p>
                   )}
                   <Button variant="primary" onClick={onConnectWallet}>
-                    Connect wallet
+                    {emailSessionActive ? "Link wallet to this account" : "Connect wallet"}
                   </Button>
                   <p className="text-[10px] text-black/40">
                     {emailSessionActive && requiresWalletSignature === false
@@ -498,6 +494,36 @@ export default function SettingsPanel({ onConnectWallet }: Props) {
         </div>
       )}
     </motion.div>
+  );
+}
+
+function NetworkSupportGroup({
+  title,
+  description,
+  networks,
+}: {
+  title: string;
+  description: string;
+  networks: string[];
+}) {
+  return (
+    <section>
+      <h3 className="font-semibold text-black">{title}</h3>
+      <p className="mt-1 text-xs leading-5 text-black/50">{description}</p>
+      <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+        {networks.map((network) => (
+          <li
+            key={network}
+            className="flex items-center justify-between gap-2 rounded-xl border border-black/10 bg-[#F7F7F7] px-3 py-2"
+          >
+            <span className="text-xs text-black/70">{network}</span>
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+              Supported
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

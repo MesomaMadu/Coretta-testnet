@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getAccessToken, useLoginWithEmail, usePrivy } from "@privy-io/react-auth";
+import { getAccessToken, useLoginWithEmail, useLoginWithOAuth, usePrivy } from "@privy-io/react-auth";
 import { useAccount, useConnect, useSignMessage } from "wagmi";
 import { arcTestnet } from "@/lib/chains";
 import { ApiError, apiFetch, getApiToken, setApiToken } from "@/lib/api";
@@ -9,6 +9,7 @@ import { buildOwnershipMessage } from "@/lib/wallet-session";
 import { useWalletSession } from "@/hooks/useWalletSession";
 import { useEip6963 } from "@/hooks/useEip6963";
 import Logo from "@/components/shared/Logo";
+import WalletLogo from "./WalletLogo";
 import styles from "./OnboardingFlow.module.css";
 
 type View =
@@ -28,6 +29,7 @@ type View =
 type Path = "wallet" | "email" | null;
 type AccountKind = "new" | "returning" | null;
 type EmailPurpose = "signin" | "link";
+type PrivyMethod = "email" | "google";
 
 interface Props {
   open: boolean;
@@ -53,7 +55,7 @@ const RESEND_COOLDOWN = 30;
 const VIEW_META: Record<View, { title: string; copy: string; note: string }> = {
   home: {
     title: "Choose an onboarding path",
-    copy: "Choose wallet or email sign-in. Coretta securely detects whether this is a new or returning account.",
+    copy: "Choose wallet, email, or Google sign-in. Coretta securely detects whether this is a new or returning account.",
     note: "Account status comes from Coretta after authentication. No demo switch or simulated account result is used.",
   },
   walletConnect: {
@@ -131,7 +133,7 @@ async function waitForPrivyAccessToken() {
   return null;
 }
 
-function errorMessage(error: unknown) {
+function errorMessage(error: unknown, privyMethod: PrivyMethod = "email") {
   const withoutVersion = (message: string) =>
     message.replace(/\s*Version:\s*[^\r\n]+(?:[\r\n].*)?$/i, "").trim();
 
@@ -142,7 +144,17 @@ function errorMessage(error: unknown) {
       case "PRIVY_NOT_CONFIGURED":
         return "Privy email authentication is not configured on the Coretta API.";
       case "PRIVY_AUTH_FAILED":
-        return "Privy could not verify this login session. Request a new code and try again.";
+        return privyMethod === "google"
+          ? "Privy could not verify this Google session. Sign in with Google again."
+          : "Privy could not verify this login session. Retry the account check, or request a new code if the session expired.";
+      case "PRIVY_UNAVAILABLE":
+        return privyMethod === "google"
+          ? "Google sign-in succeeded, but Coretta could not reach Privy to finish the account check. Retry shortly."
+          : "Your code was accepted, but Coretta could not reach Privy to finish the account check. Retry shortly.";
+      case "PRIVY_TOKEN_PENDING":
+        return privyMethod === "google"
+          ? "Google sign-in finished, but the Privy session is still loading. Retry the account check without signing in again."
+          : "Your code was accepted, but the Privy session is still loading. Retry Coretta sign-in without requesting another code.";
       case "EMAIL_ALREADY_LINKED":
         return "This email already belongs to another Coretta account.";
       case "WALLET_ALREADY_LINKED":
@@ -162,6 +174,22 @@ function errorMessage(error: unknown) {
   return "Coretta could not complete this step.";
 }
 
+function isRejectedPrivyOtp(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /expired|invalid|incorrect|maximum|max attempts|attempt limit/i.test(message);
+}
+
+function privyOtpErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (isRejectedPrivyOtp(error)) {
+    return "That code is invalid or expired. Request a new code and use the latest Privy email.";
+  }
+  if (/failed to fetch|network|timeout|connection/i.test(message)) {
+    return "Privy could not be reached. Check your connection and try the same code again.";
+  }
+  return "Privy could not verify the code. Try the same code again before requesting a new one.";
+}
+
 function shortAddress(address?: string | null) {
   if (!address) return "";
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -175,6 +203,7 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [emailPurpose, setEmailPurpose] = useState<EmailPurpose>("signin");
+  const [privyMethod, setPrivyMethod] = useState<PrivyMethod>("email");
   const [emailStep, setEmailStep] = useState<"email" | "otp">("email");
   const [privyToken, setPrivyToken] = useState<string | null>(null);
   const [privyVerified, setPrivyVerified] = useState(false);
@@ -192,6 +221,15 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
   const { connectAsync, connectors, isPending: connectPending } = useConnect();
   const { signMessageAsync } = useSignMessage();
   const { authenticated, logout } = usePrivy();
+  const { initOAuth, loading: oauthLoading } = useLoginWithOAuth({
+    onComplete: ({ loginMethod }) => {
+      if (loginMethod === "google") void finishGoogleSignIn();
+    },
+    onError: () => {
+      setBusy(false);
+      setError("Google sign-in couldn't finish. Try again in Chrome or Edge, or use email. Google must also be enabled in the Privy dashboard.");
+    },
+  });
   const { sendCode: sendPrivyCode, loginWithCode } = useLoginWithEmail();
   const { installedWallets } = useEip6963();
   const {
@@ -207,7 +245,11 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
   const emailEnabled = Boolean(process.env.NEXT_PUBLIC_PRIVY_APP_ID);
   const injected = connectors.find((connector) => connector.id === "injected");
   const walletConnect = connectors.find((connector) => connector.id === "walletConnect");
-  const loading = busy || verifying || connectPending;
+  const loading = busy || verifying || connectPending || oauthLoading;
+  const walletChoices = installedWallets.length ? installedWallets : [{ id: "browser", name: "Browser wallet", rdns: "", icon: undefined }];
+  const connectorForWallet = (wallet: (typeof walletChoices)[number]) =>
+    connectors.find((connector) => connector.id === wallet.rdns || connector.name.toLowerCase() === wallet.name.toLowerCase()) ??
+    (wallet.id === "browser" || installedWallets.length === 1 ? injected : undefined);
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -271,6 +313,7 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
     setOtp("");
     setEmailStep("email");
     setEmailPurpose("signin");
+    setPrivyMethod("email");
     setPrivyToken(null);
     setPrivyVerified(false);
     setSmartWalletAddress(null);
@@ -429,6 +472,7 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
 
   const startEmail = () => {
     setPath("email");
+    setPrivyMethod("email");
     setAccountKind(null);
     resetEmailForm("signin");
     pushView("emailEntry");
@@ -494,8 +538,12 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
 
   const retryVerifiedEmailCheck = async () => {
     if (!privyToken) {
-      setError("The Privy session is no longer available. Request a new code.");
-      replaceView("emailEntry");
+      setError(
+        privyMethod === "google"
+          ? "The Google session is no longer available. Sign in with Google again."
+          : "The Privy session is no longer available. Request a new code.",
+      );
+      if (privyMethod === "email") replaceView("emailEntry");
       return;
     }
     setBusy(true);
@@ -503,9 +551,44 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
     try {
       await finishVerifiedEmailCheck(privyToken);
     } catch (checkError) {
-      setError(errorMessage(checkError));
+      setError(errorMessage(checkError, privyMethod));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const finishGoogleSignIn = async () => {
+    setBusy(true);
+    setPath("email");
+    setPrivyMethod("google");
+    setEmailPurpose("signin");
+    replaceView("emailCheck");
+    try {
+      const token = await waitForPrivyAccessToken();
+      if (!token) throw new ApiError(503, "PRIVY_TOKEN_PENDING", "Privy access token was not ready.");
+      setPrivyToken(token);
+      setPrivyVerified(true);
+      await finishVerifiedEmailCheck(token);
+    } catch (googleError) {
+      setError(errorMessage(googleError, "google"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startGoogle = async () => {
+    setBusy(true);
+    setError(null);
+    setPath("email");
+    setPrivyMethod("google");
+    setAccountKind(null);
+    resetEmailForm("signin");
+    try {
+      if (authenticated) await logout();
+      await initOAuth({ provider: "google" });
+    } catch {
+      setBusy(false);
+      setError("Google sign-in couldn't start. Use Chrome or Edge, or continue with email. Check Google is enabled in Privy and localhost is allowed.");
     }
   };
 
@@ -520,17 +603,26 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
     }
     setBusy(true);
     setError(null);
-    const mustSubmitOtp = !privyVerified || !privyToken;
-    try {
-      let token = privyToken;
-      if (mustSubmitOtp) {
+    const mustSubmitOtp = !privyVerified;
+    let token = privyToken;
+    if (mustSubmitOtp) {
+      try {
         await loginWithCode({ code: otp });
-        token = await waitForPrivyAccessToken();
-        if (!token) throw new Error("Privy access token was not ready.");
-        setPrivyToken(token);
         setPrivyVerified(true);
+      } catch (otpError) {
+        if (isRejectedPrivyOtp(otpError)) setOtpAttempts((count) => count + 1);
+        setError(privyOtpErrorMessage(otpError));
+        setBusy(false);
+        return;
       }
-      if (!token) throw new Error("Privy access token was not ready.");
+    }
+
+    try {
+      if (!token) token = await waitForPrivyAccessToken();
+      if (!token) {
+        throw new ApiError(503, "PRIVY_TOKEN_PENDING", "Privy access token was not ready.");
+      }
+      setPrivyToken(token);
 
       if (emailPurpose === "link") {
         await exchangePrivySession(token, true);
@@ -543,12 +635,7 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
       replaceView("emailCheck");
       await finishVerifiedEmailCheck(token);
     } catch (verifyEmailError) {
-      if (mustSubmitOtp && !privyVerified) setOtpAttempts((count) => count + 1);
-      setError(
-        verifyEmailError instanceof ApiError
-          ? errorMessage(verifyEmailError)
-          : "That code is invalid or expired. Check the latest Privy email and try again.",
-      );
+      setError(errorMessage(verifyEmailError));
     } finally {
       setBusy(false);
     }
@@ -556,8 +643,12 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
 
   const createWalletFromEmail = async () => {
     if (!privyToken) {
-      setError("Your verified Privy session is no longer available. Request a new code.");
-      replaceView("emailEntry");
+      setError(
+        privyMethod === "google"
+          ? "Your verified Google session is no longer available. Sign in with Google again."
+          : "Your verified Privy session is no longer available. Request a new code.",
+      );
+      if (privyMethod === "email") replaceView("emailEntry");
       return;
     }
     setBusy(true);
@@ -577,6 +668,7 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
   };
 
   const openEmailLink = () => {
+    setPrivyMethod("email");
     resetEmailForm("link");
     pushView("linkEmail");
   };
@@ -616,9 +708,11 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
     if (!path) return ["Choose path", "Authenticate", "Check account", "Continue"];
     if (path === "wallet" && accountKind === "returning") return ["Connect", "Verify ownership", "Ready"];
     if (path === "wallet") return ["Connect", "Check account", "Approve", "Create wallet", "Fund"];
-    if (accountKind === "returning") return ["Sign in", "Verify email", "Restore wallet", "Ready"];
-    return ["Sign in", "Verify email", "Approve", "Create wallet", "Fund"];
-  }, [accountKind, path]);
+    if (privyMethod === "google" && accountKind === "returning") return ["Google sign-in", "Check account", "Restore wallet", "Ready"];
+    if (privyMethod === "google") return ["Google sign-in", "Check account", "Approve", "Create wallet", "Fund"];
+    if (accountKind === "returning") return ["Email sign-in", "Verify code", "Restore wallet", "Ready"];
+    return ["Email sign-in", "Verify code", "Approve", "Create wallet", "Fund"];
+  }, [accountKind, path, privyMethod]);
   const journeyIndex = useMemo(() => {
     if (view === "home") return 0;
     if (view === "walletConnect" || view === "emailEntry" || view === "linkEmail") return 0;
@@ -655,7 +749,7 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
         <input className={`${styles.field} ${styles.codeField}`} id={isLink ? "linkOtp" : "otp"} inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="000000" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} disabled={loading} autoFocus required />
         {renderError()}
         <div className={styles.buttonRow}>
-          <button className={styles.primaryButton} type="submit" disabled={loading || otp.length !== 6}>{loading ? "Verifying..." : isLink ? "Verify and link email" : "Verify code"}</button>
+          <button className={styles.primaryButton} type="submit" disabled={loading || otp.length !== 6}>{loading ? "Verifying..." : privyVerified ? isLink ? "Retry linking email" : "Retry Coretta sign-in" : isLink ? "Verify and link email" : "Verify code"}</button>
           <button className={styles.secondaryButton} type="button" disabled={loading || resendIn > 0} onClick={() => void sendEmailCode()}>{resendIn > 0 ? `Resend in ${resendIn}s` : "Resend code"}</button>
         </div>
         <p className={styles.trustNote}>Code sent to {email}. Privy accepts up to five attempts for the latest code.</p>
@@ -666,7 +760,24 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
   const content = (() => {
     switch (view) {
       case "walletConnect":
-        return <div className={styles.stageContent}><p className={styles.eyebrow}>Step 1 · Wallet sign-in</p><h2>Connect your wallet</h2><p className={styles.lede}>Choose the wallet you want to use with Coretta. No transaction is sent.</p>{renderError()}<div className={styles.connectList}>{(installedWallets.length ? installedWallets : [{ id: "browser", name: "Browser wallet" }]).map((wallet) => <button className={styles.walletOption} type="button" key={wallet.id} disabled={!injected || loading} onClick={() => injected && void connectWallet(injected)}><span className={styles.walletLogo}>{wallet.name.slice(0, 2).toUpperCase()}</span><span><strong>{wallet.name}</strong><small>{installedWallets.length ? "Installed browser wallet" : "Browser extension"}</small></span><span className={styles.walletArrow}>→</span></button>)}{walletConnect && <button className={styles.walletOption} type="button" disabled={loading} onClick={() => void connectWallet(walletConnect)}><span className={styles.walletLogo}>WC</span><span><strong>WalletConnect</strong><small>Scan with a mobile wallet</small></span><span className={styles.walletArrow}>→</span></button>}</div><p className={styles.trustNote}>Coretta requests Arc Testnet and never reads your wallet's private key.</p></div>;
+        return <div className={styles.stageContent}>
+          <p className={styles.eyebrow}>Step 1 · Wallet sign-in</p><h2>Connect your wallet</h2>
+          <p className={styles.lede}>Choose the wallet you want to use with Coretta. No transaction is sent.</p>{renderError()}
+          <div className={styles.connectList}>
+            {walletChoices.map((wallet) => {
+              const connector = connectorForWallet(wallet);
+              return <button className={styles.walletOption} type="button" key={wallet.id} disabled={!connector || loading} onClick={() => connector && void connectWallet(connector)}>
+                <span className={styles.walletLogo}><WalletLogo id={wallet.id} icon={wallet.icon ?? connector?.icon} /></span>
+                <span><strong>{wallet.name}</strong><small>{installedWallets.length ? "Installed browser wallet" : "Browser extension"}</small></span>
+                <span className={styles.walletArrow}>→</span>
+              </button>;
+            })}
+            {walletConnect && <button className={styles.walletOption} type="button" disabled={loading} onClick={() => void connectWallet(walletConnect)}>
+              <span className={styles.walletLogo}><WalletLogo id="walletconnect" /></span>
+              <span><strong>WalletConnect</strong><small>Scan with a mobile wallet</small></span><span className={styles.walletArrow}>→</span>
+            </button>}
+          </div><p className={styles.trustNote}>Coretta requests Arc Testnet and never reads your wallet's private key.</p>
+        </div>;
       case "walletCheck":
         return <div className={styles.stageContent}><div className={styles.statusWrap}><div className={styles.statusOrbit} aria-label="Checking" /><p className={styles.eyebrow}>Connected · {shortAddress(address)}</p><h2>Checking for your smart wallet</h2><p className={styles.lede}>Coretta is checking this address and will request a free signature when ownership proof is required.</p><div className={styles.checkList}><div className={styles.checkRow}><span className={styles.checkMark}>✓</span>Wallet connection confirmed</div><div className={styles.checkRow}><span className={styles.checkMark}>···</span>{verified ? "Ownership verified" : "Checking account and ownership"}</div></div>{renderError()}{error && <div className={styles.buttonRow}>{accountKind === "returning" ? <button className={styles.primaryButton} type="button" disabled={loading} onClick={() => void authenticateReturningWallet()}>Sign in again</button> : <button className={styles.primaryButton} type="button" disabled={loading} onClick={retryWalletCheck}>Retry account check</button>}</div>}</div></div>;
       case "walletNone":
@@ -678,9 +789,9 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
       case "emailSignInCode":
         return <div className={styles.stageContent}><p className={styles.eyebrow}>Step 2 · Verify email</p><h2>Enter your sign-in code</h2><p className={styles.lede}>Enter the six-digit OTP Privy sent to {email} to finish signing in.</p>{renderEmailForm()}</div>;
       case "emailCheck":
-        return <div className={styles.stageContent}><div className={styles.statusWrap}><div className={styles.statusOrbit} aria-label="Checking" /><p className={styles.eyebrow}>Signed in · {email}</p><h2>Checking your account</h2><p className={styles.lede}>Coretta is looking for an Arc Testnet smart wallet attached to this verified Privy email.</p><div className={styles.checkList}><div className={styles.checkRow}><span className={styles.checkMark}>✓</span>Email identity verified</div><div className={styles.checkRow}><span className={styles.checkMark}>···</span>Checking linked smart wallets</div></div>{renderError()}{error && <div className={styles.buttonRow}><button className={styles.primaryButton} type="button" disabled={loading} onClick={() => void retryVerifiedEmailCheck()}>Retry account check</button></div>}</div></div>;
+        return <div className={styles.stageContent}><div className={styles.statusWrap}><div className={styles.statusOrbit} aria-label="Checking" /><p className={styles.eyebrow}>Signed in · {email}</p><h2>Checking your account</h2><p className={styles.lede}>Coretta is looking for an Arc Testnet smart wallet attached to this verified {privyMethod === "google" ? "Google account" : "Privy email"}.</p><div className={styles.checkList}><div className={styles.checkRow}><span className={styles.checkMark}>✓</span>{privyMethod === "google" ? "Google identity verified" : "Email code verified"}</div><div className={styles.checkRow}><span className={styles.checkMark}>···</span>Checking linked smart wallets</div></div>{renderError()}{error && <div className={styles.buttonRow}><button className={styles.primaryButton} type="button" disabled={loading} onClick={() => void retryVerifiedEmailCheck()}>Retry account check</button></div>}</div></div>;
       case "emailNone":
-        return <div className={styles.stageContent}><p className={styles.eyebrow}>No smart wallet attached</p><h2>Finish creating your Coretta account</h2><p className={styles.lede}>Your Privy email is verified, but it does not have a Coretta smart wallet yet. Approve creation now.</p>{renderError()}<div className={styles.promptCard}><h3>Your Coretta account includes</h3><p>A Circle developer-controlled wallet managed by Coretta on your behalf, ready for Arc Testnet deposits and supported actions.</p><ul className={styles.benefitList}><li>Sign in with Privy email OTP</li><li>No separate wallet seed phrase</li><li>Link a self-custodied external wallet whenever you want</li></ul><div className={styles.buttonRow}><button className={styles.primaryButton} type="button" disabled={loading} onClick={() => void createWalletFromEmail()}>Secure account and continue</button><button className={styles.textButton} type="button" onClick={restart}>Not now</button></div></div></div>;
+        return <div className={styles.stageContent}><p className={styles.eyebrow}>No smart wallet attached</p><h2>Finish creating your Coretta account</h2><p className={styles.lede}>Your {privyMethod === "google" ? "Google account" : "Privy email"} is verified, but it does not have a Coretta smart wallet yet. Approve creation now.</p>{renderError()}<div className={styles.promptCard}><h3>Your Coretta account includes</h3><p>A Circle developer-controlled wallet managed by Coretta on your behalf, ready for Arc Testnet deposits and supported actions.</p><ul className={styles.benefitList}><li>{privyMethod === "google" ? "Sign in with Google without an email code" : "Sign in with Privy email OTP"}</li><li>No separate wallet seed phrase</li><li>Link a self-custodied external wallet whenever you want</li></ul><div className={styles.buttonRow}><button className={styles.primaryButton} type="button" disabled={loading} onClick={() => void createWalletFromEmail()}>Secure account and continue</button><button className={styles.textButton} type="button" onClick={restart}>Not now</button></div></div></div>;
       case "creating":
         return <div className={styles.stageContent}><div className={styles.statusWrap}><div className={styles.statusOrbit} aria-label="Creating" /><p className={styles.eyebrow}>Identity secured · {path === "email" ? email : shortAddress(address)}</p><h2>Creating your smart wallet</h2><p className={styles.lede}>Coretta is preparing your Circle-managed account on Arc Testnet. Keep this page open.</p><div className={styles.checkList}><div className={styles.checkRow}><span className={styles.checkMark}>✓</span>Authentication confirmed</div><div className={styles.checkRow}><span className={styles.checkMark}>✓</span>Developer-controlled wallet policy prepared</div><div className={styles.checkRow}><span className={styles.checkMark}>···</span>Registering wallet address</div></div>{renderError()}</div></div>;
       case "linkEmail":
@@ -695,7 +806,16 @@ export default function OnboardingFlow({ open, onComplete, onEmailLinked }: Prop
       }
       case "home":
       default:
-        return <div className={styles.stageContent}><p className={styles.eyebrow}>One account · Flexible access</p><h1>Move money onchain, without the friction.</h1><p className={styles.lede}>Sign in your way. Coretta checks for your secure smart wallet and guides you through setup only when you need it.</p>{renderError()}<div className={styles.entryGrid}><button className={styles.entryCard} type="button" onClick={startWallet}><span className={styles.entryIcon}>W</span><span className={styles.entryTitle}>Continue with wallet</span><span className={styles.entryCopy}>Connect a browser wallet and prove ownership with a signature.</span></button><button className={styles.entryCard} type="button" onClick={startEmail} disabled={!emailEnabled}><span className={styles.entryIcon}>@</span><span className={styles.entryTitle}>Continue with email</span><span className={styles.entryCopy}>Use Privy email authentication and a one-time sign-in code.</span></button></div><div className={styles.scenarioRow}><div><div className={styles.scenarioTitle}>New or returning?</div><p className={styles.scenarioCopy}>Coretta detects the correct account path after secure sign-in.</p></div><div className={styles.automaticPill}><span className={styles.demoDot} /> Automatic account check</div></div></div>;
+        return <div className={styles.stageContent}>
+          <p className={styles.eyebrow}>One account · Flexible access</p><h1>Move money onchain, without the friction.</h1>
+          <p className={styles.lede}>Sign in your way. Coretta checks for your secure smart wallet and guides you through setup only when you need it.</p>{renderError()}
+          <div className={styles.entryGrid}>
+            <button className={styles.entryCard} type="button" onClick={startWallet} disabled={loading}><span className={styles.entryIcon}><WalletLogo id="browser" /></span><span className={styles.entryTitle}>Continue with wallet</span><span className={styles.entryCopy}>Connect a browser wallet and prove ownership with a signature.</span></button>
+            <button className={styles.entryCard} type="button" onClick={startEmail} disabled={!emailEnabled || loading}><span className={styles.entryIcon}>@</span><span className={styles.entryTitle}>Continue with email</span><span className={styles.entryCopy}>Use Privy email authentication and a one-time sign-in code.</span></button>
+            <button className={styles.entryCard} type="button" onClick={() => void startGoogle()} disabled={!emailEnabled || loading}><span className={styles.entryIcon}><img src="/wallets/google.svg" alt="" width={24} height={24} /></span><span className={styles.entryTitle}>Continue with Google</span><span className={styles.entryCopy}>Sign in securely with your Google account through Privy.</span></button>
+          </div>
+          <div className={styles.scenarioRow}><div><div className={styles.scenarioTitle}>New or returning?</div><p className={styles.scenarioCopy}>Coretta detects the correct account path after secure sign-in.</p></div><div className={styles.automaticPill}><span className={styles.demoDot} /> Automatic account check</div></div>
+        </div>;
     }
   })();
 

@@ -42,6 +42,7 @@ interface UserUsageMetrics {
   walletCreationCount: number;
   signatureRequestCount: number;
   connectionCount: number;
+  networkRecoveryAttemptLimit: number;
   resetInSeconds: number;
   lastResetAt: string;
   updatedAt: string;
@@ -354,6 +355,12 @@ export default function SponsorshipDashboard() {
             icon={Wallet}
             title="Wallet Activations"
             current={metrics.walletCreationCount}
+            limit={null}
+          />
+          <QuotaCard
+            icon={RefreshCw}
+            title="Recovery checks per bridge"
+            current={metrics.networkRecoveryAttemptLimit}
             limit={null}
           />
         </motion.div>

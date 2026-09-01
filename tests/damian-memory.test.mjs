@@ -12,9 +12,14 @@ import {
 import {
   redactDamianContextForProvider,
 } from "../apps/api/dist/services/damian-conversation.js";
-import { redactAiSummary } from "../apps/api/dist/services/ai.js";
+import {
+  assertNoSecrets,
+  redactAiSummary,
+  redactSensitiveIdentifiers,
+} from "../apps/api/dist/services/ai.js";
 import { arcTokenAddress } from "../apps/api/dist/services/transactions.js";
 import { EURC_ADDRESS, USDC_ADDRESS } from "../packages/shared/dist/index.js";
+import { getApprovalDecisionError } from "../apps/api/dist/services/approvals.js";
 
 test("saved recipient labels normalize without becoming executable instructions", () => {
   assert.equal(normalizeRecipientLabel("  Daniel   Old Wallet  "), "daniel old wallet");
@@ -50,6 +55,21 @@ test("provider context redacts account identifiers and tokens", () => {
   assert.equal(sanitized.includes("abc.def.ghi"), false);
 });
 
+test("provider context fully removes ambiguous 32-byte values", () => {
+  const sensitiveValue = `0x${"a".repeat(64)}`;
+  const sanitized = redactDamianContextForProvider(`Check transaction ${sensitiveValue}`);
+  assert.equal(sanitized.includes(sensitiveValue), false);
+  assert.equal(sanitized.includes("a".repeat(24)), false);
+});
+
+test("security terminology is allowed but supplied secrets are rejected", () => {
+  assert.doesNotThrow(() => assertNoSecrets("What is a seed phrase?"));
+  assert.throws(
+    () => assertNoSecrets("seed phrase: alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima"),
+    /SENSITIVE_DATA_REJECTED/,
+  );
+});
+
 test("unencrypted message summaries do not retain recipient identifiers", () => {
   const summary = redactAiSummary(
     "Pay 0x1111111111111111111111111111111111111111 or contact me@example.com",
@@ -58,7 +78,38 @@ test("unencrypted message summaries do not retain recipient identifiers", () => 
   assert.equal(summary.includes("me@example.com"), false);
 });
 
+test("feedback context does not retain wallet, email, phone, or bearer identifiers", () => {
+  const context = redactSensitiveIdentifiers(
+    JSON.stringify({
+      recipient: "0x1111111111111111111111111111111111111111",
+      email: "me@example.com",
+      phone: "+234 800 000 0000",
+      token: "Bearer abc.def.ghi",
+    }),
+  );
+  assert.equal(context.includes("0x1111111111111111111111111111111111111111"), false);
+  assert.equal(context.includes("me@example.com"), false);
+  assert.equal(context.includes("+234 800 000 0000"), false);
+  assert.equal(context.includes("abc.def.ghi"), false);
+});
+
 test("Arc remittances select the signed stablecoin contract", () => {
   assert.equal(arcTokenAddress("USDC"), USDC_ADDRESS);
   assert.equal(arcTokenAddress("EURC"), EURC_ADDRESS);
+});
+
+test("recipient approval decisions reject terminal and expired states", () => {
+  const now = new Date("2026-08-28T12:00:00.000Z");
+  assert.equal(
+    getApprovalDecisionError("PENDING", new Date("2026-08-28T13:00:00.000Z"), now),
+    null,
+  );
+  assert.equal(
+    getApprovalDecisionError("PENDING", new Date("2026-08-28T11:59:59.000Z"), now),
+    "APPROVAL_EXPIRED",
+  );
+  assert.equal(
+    getApprovalDecisionError("ACCEPTED", new Date("2026-08-28T13:00:00.000Z"), now),
+    "APPROVAL_ACCEPTED",
+  );
 });

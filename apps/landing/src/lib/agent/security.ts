@@ -1,32 +1,16 @@
-const INJECTION_PATTERNS = [
-  /ignore\s+(all\s+)?(previous|prior)\s+(rules|instructions)/i,
-  /send\s+all\s+(funds|money|balance)/i,
-  /drain\s+(the\s+)?wallet/i,
-  /approve\s+(unlimited|max|infinite)/i,
-  /execute\s+arbitrary/i,
-  /bypass\s+(confirmation|security)/i,
-  /hidden\s+(transfer|transaction)/i,
-  /override\s+(recipient|amount)/i,
-  /system\s*prompt/i,
-  /you\s+are\s+now/i,
-  /disregard\s+safety/i,
-];
+import { assessDamianInputSecurity } from "@coretta/shared/damian-security";
 
 const BLOCKED_AMOUNTS = [/^\s*all\s*$/i, /maximum/i, /everything/i];
 
 export function detectPromptInjection(input: string): string | null {
-  const trimmed = input.trim();
-  for (const pattern of INJECTION_PATTERNS) {
-    if (pattern.test(trimmed)) {
-      return "I can't process requests that attempt to override security rules. Please describe a specific transfer with a clear amount and recipient.";
-    }
-  }
-  return null;
+  const assessment = assessDamianInputSecurity(input);
+  return assessment.allowed ? null : assessment.response;
 }
 
 export function validateAmountToken(amountStr: string): boolean {
   if (BLOCKED_AMOUNTS.some((p) => p.test(amountStr))) return false;
-  const n = parseFloat(amountStr.replace(/,/g, ""));
+  if (!/^\d+(?:\.\d{1,6})?$/.test(amountStr)) return false;
+  const n = Number(amountStr);
   return Number.isFinite(n) && n > 0 && n <= 100;
 }
 

@@ -20,9 +20,8 @@ export default function HaloUseCases() {
             Use modes
           </h2>
           <p className="max-w-sm text-base leading-relaxed text-black/60">
-            {BRAND_NAME} powers remittance, treasury ops, and AI-assisted sends for
-            builders and teams who want safe, USDC-first stablecoin flows on Arc
-            Testnet, plus more.
+            {BRAND_NAME} supports personal payments, group payouts, and cross chain
+            USDC transfers on Arc Testnet.
           </p>
         </div>
 
@@ -52,9 +51,8 @@ export default function HaloUseCases() {
               Remittance
             </h3>
             <p className="mb-8 max-w-md text-base text-black/70">
-              Lift retention by offering USDC transfers without a separate native gas token with {AGENT_NAME}.
-              Patrons get dollar-backed settlement without touching seed phrases or
-              gas tokens.
+              Send USDC or EURC on Arc, split payments across a group, or bridge USDC
+              to supported EVM testnets with {AGENT_NAME}.
             </p>
             <Link
               href="/app"

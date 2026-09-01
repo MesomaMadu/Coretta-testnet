@@ -28,6 +28,9 @@
       ],
       "@coretta/shared": [
         "../../packages/shared/src"
+      ],
+      "@coretta/shared/*": [
+        "../../packages/shared/src/*"
       ]
     }
   },

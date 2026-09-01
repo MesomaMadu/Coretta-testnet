@@ -8,6 +8,7 @@ export interface SupportedWalletInfo {
   rdns: string;
   installed: boolean;
   installUrl: string;
+  icon?: string;
 }
 
 const SUPPORTED_LIST = [
@@ -39,17 +40,27 @@ const SUPPORTED_LIST = [
 
 export function useEip6963() {
   const [discoveredRdns, setDiscoveredRdns] = useState<Set<string>>(new Set());
+  const [icons, setIcons] = useState<Record<string, string>>({});
+  const [discoveredProviders, setDiscoveredProviders] = useState<Record<string, { name: string; rdns: string; icon?: string }>>({});
 
   useEffect(() => {
     const found = new Set<string>();
 
     const onAnnounce = (event: Event) => {
       const detail = (event as CustomEvent).detail as {
-        info: { rdns: string };
+        info: { name?: string; rdns: string; icon?: string };
       };
       if (detail?.info?.rdns) {
         found.add(detail.info.rdns);
         setDiscoveredRdns(new Set(found));
+        setDiscoveredProviders((current) => ({
+          ...current,
+          [detail.info.rdns]: { name: detail.info.name?.trim() || detail.info.rdns, rdns: detail.info.rdns, icon: detail.info.icon },
+        }));
+        if (typeof detail.info.icon === "string") {
+          const { rdns, icon } = detail.info;
+          setIcons((current) => ({ ...current, [rdns]: icon }));
+        }
       }
     };
 
@@ -87,10 +98,15 @@ export function useEip6963() {
     return {
       ...w,
       installed,
+      icon: icons[w.rdns],
     };
   });
 
-  const installedWallets = supportedWallets.filter((w) => w.installed);
+  const supportedRdns = new Set(SUPPORTED_LIST.map((wallet) => wallet.rdns));
+  const discoveredWallets: SupportedWalletInfo[] = Object.values(discoveredProviders)
+    .filter((wallet) => !supportedRdns.has(wallet.rdns as (typeof SUPPORTED_LIST)[number]["rdns"]))
+    .map((wallet) => ({ id: wallet.rdns, name: wallet.name, rdns: wallet.rdns, installed: true, installUrl: "", icon: wallet.icon }));
+  const installedWallets = [...supportedWallets.filter((w) => w.installed), ...discoveredWallets];
 
   return { supportedWallets, installedWallets };
 }

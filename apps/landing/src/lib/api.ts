@@ -8,6 +8,7 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string | null,
     message: string,
+    public readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -35,7 +36,9 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const auth = init?.auth ?? true;
   const headers = new Headers(init?.headers);
-  headers.set("Content-Type", "application/json");
+  if (init?.body != null && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   if (auth) {
     const token = getApiToken();
     if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -51,8 +54,10 @@ export async function apiFetch<T>(
     const text = await res.text().catch(() => "");
     let code: string | null = null;
     let message = text || res.statusText || "Request failed";
+    let details: unknown;
     try {
       const body = JSON.parse(text) as { code?: unknown; message?: unknown };
+      details = body;
       code = typeof body.code === "string" ? body.code : null;
       if (typeof body.message === "string" && body.message.trim()) {
         message = body.message;
@@ -60,7 +65,7 @@ export async function apiFetch<T>(
     } catch {
       /* non-JSON error response */
     }
-    throw new ApiError(res.status, code, message);
+    throw new ApiError(res.status, code, message, details);
   }
   return (await res.json()) as T;
 }

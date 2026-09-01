@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -19,6 +19,25 @@ import {
 import { useWalletSession } from "@/hooks/useWalletSession";
 import { useWalletBalances } from "./SmartWalletBalanceBubble";
 import { cn } from "@/lib/utils";
+import { apiFetch, getApiToken } from "@/lib/api";
+import NetworkArc from "@web3icons/react/icons/networks/NetworkArc";
+import NetworkArbitrumSepolia from "@web3icons/react/icons/networks/NetworkArbitrumSepolia";
+import NetworkAvalancheFuji from "@web3icons/react/icons/networks/NetworkAvalancheFuji";
+import NetworkBaseSepolia from "@web3icons/react/icons/networks/NetworkBaseSepolia";
+import NetworkCodex from "@web3icons/react/icons/networks/NetworkCodex";
+import NetworkEthereum from "@web3icons/react/icons/networks/NetworkEthereum";
+import NetworkHyperEvm from "@web3icons/react/icons/networks/NetworkHyperEvm";
+import NetworkInk from "@web3icons/react/icons/networks/NetworkInk";
+import NetworkLineaSepolia from "@web3icons/react/icons/networks/NetworkLineaSepolia";
+import NetworkMonadTestnet from "@web3icons/react/icons/networks/NetworkMonadTestnet";
+import NetworkOptimismSepolia from "@web3icons/react/icons/networks/NetworkOptimismSepolia";
+import NetworkPlume from "@web3icons/react/icons/networks/NetworkPlume";
+import NetworkPolygonAmoy from "@web3icons/react/icons/networks/NetworkPolygonAmoy";
+import NetworkSeiNetwork from "@web3icons/react/icons/networks/NetworkSeiNetwork";
+import NetworkSonic from "@web3icons/react/icons/networks/NetworkSonic";
+import NetworkUnichain from "@web3icons/react/icons/networks/NetworkUnichain";
+import NetworkWorld from "@web3icons/react/icons/networks/NetworkWorld";
+import NetworkXdc from "@web3icons/react/icons/networks/NetworkXdc";
 import {
   getDeveloperDiagnosticsEnabled,
   subscribeDeveloperDiagnostics,
@@ -29,6 +48,25 @@ interface Props {
 }
 
 const ARC_EXPLORER = "https://testnet.arcscan.app";
+
+type ChainBalance = {
+  id: string;
+  label: string;
+  chainId: number;
+  explorerUrl: string;
+  balance: string | null;
+  status: "ready" | "unavailable";
+};
+
+type ChainBalanceResult = {
+  walletAddress: string;
+  token: "USDC";
+  totalBalance: string;
+  availableChainCount: number;
+  unavailableChainCount: number;
+  chains: ChainBalance[];
+  updatedAt: string;
+};
 
 function formatBalance(value: string | null) {
   if (value == null) return "—";
@@ -57,6 +95,9 @@ export default function DashboardPanel({ onConnectWallet }: Props) {
   const [balanceDetailsOpen, setBalanceDetailsOpen] = useState(false);
   const [activityExpanded, setActivityExpanded] = useState(false);
   const [developerDiagnostics, setDeveloperDiagnostics] = useState(false);
+  const [chainBalances, setChainBalances] = useState<ChainBalanceResult | null>(null);
+  const [chainBalancesLoading, setChainBalancesLoading] = useState(false);
+  const [chainBalancesError, setChainBalancesError] = useState<string | null>(null);
   const { smartWalletActive, identityConnected, smartWalletAddress } = useWalletSession();
   const {
     usdc,
@@ -78,7 +119,36 @@ export default function DashboardPanel({ onConnectWallet }: Props) {
     return subscribeDeveloperDiagnostics(setDeveloperDiagnostics);
   }, []);
 
-  const combinedBalance = smartWalletAddress ? combineTokenBalances(usdc, eurc) : null;
+  const refreshChainBalances = useCallback(async () => {
+    if (!getApiToken() || !smartWalletAddress) {
+      setChainBalances(null);
+      setChainBalancesError(null);
+      return;
+    }
+    setChainBalancesLoading(true);
+    try {
+      const result = await apiFetch<ChainBalanceResult>("/v1/balances/chains");
+      setChainBalances(result);
+      setChainBalancesError(null);
+    } catch (error) {
+      setChainBalancesError(
+        error instanceof Error ? error.message : "Cross-chain balances are unavailable.",
+      );
+    } finally {
+      setChainBalancesLoading(false);
+    }
+  }, [smartWalletAddress]);
+
+  useEffect(() => {
+    void refreshChainBalances();
+    if (!smartWalletAddress || !getApiToken()) return;
+    const interval = window.setInterval(() => void refreshChainBalances(), 30_000);
+    return () => window.clearInterval(interval);
+  }, [refreshChainBalances, smartWalletAddress]);
+
+  const combinedBalance = smartWalletAddress
+    ? combineTokenBalances(chainBalances?.totalBalance ?? usdc, eurc)
+    : null;
 
   const sevenDaysAgo = Date.now() - 7 * 86_400_000;
   const recentPeriod = items.filter((item) => (item.timestamp ?? 0) >= sevenDaysAgo);
@@ -133,7 +203,9 @@ export default function DashboardPanel({ onConnectWallet }: Props) {
                 {isConnected && (
                   <button
                     type="button"
-                    onClick={() => void refreshBalances()}
+                    onClick={() =>
+                      void Promise.all([refreshBalances(), refreshChainBalances()])
+                    }
                     className="rounded-full p-2 text-black/40 transition hover:bg-black/5 hover:text-black"
                     aria-label="Refresh smart wallet balances"
                   >
@@ -155,12 +227,12 @@ export default function DashboardPanel({ onConnectWallet }: Props) {
                 aria-controls="managed-balance-breakdown"
               >
                 <div className="min-w-0">
-                  <p className="text-[10px] text-black/45">Total</p>
+                  <p className="text-[10px] text-black/45">Visible total</p>
                   <p className="mt-2 truncate text-xl font-semibold tracking-tight text-black">
                     {formatBalance(combinedBalance)}
                   </p>
                   <p className="mt-1 text-[10px] font-semibold text-black/40">
-                    Combined USDC + EURC amount
+                    USDC across readable testnets + Arc EURC
                   </p>
                 </div>
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white text-black/55">
@@ -179,7 +251,7 @@ export default function DashboardPanel({ onConnectWallet }: Props) {
                   className="grid grid-cols-2 gap-3 border-t border-black/10 p-3"
                 >
                   <BalanceCard
-                    label="USDC balance"
+                    label="Arc USDC balance"
                     value={smartWalletAddress ? formatBalance(usdc) : "—"}
                     asset="USDC"
                   />
@@ -188,6 +260,39 @@ export default function DashboardPanel({ onConnectWallet }: Props) {
                     value={smartWalletAddress ? formatBalance(eurc) : "—"}
                     asset="EURC"
                   />
+                  <div className="col-span-2 rounded-xl bg-white p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[10px] text-black/45">USDC by network</p>
+                        <p className="mt-1 text-[10px] text-black/35">
+                          Arc and live CCTP destination testnets
+                        </p>
+                      </div>
+                      {chainBalancesLoading && (
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin text-black/35" />
+                      )}
+                    </div>
+                    {chainBalancesError && !chainBalances && (
+                      <p className="mt-3 rounded-lg bg-[#F5F5F5] px-3 py-2 text-[10px] text-black/50">
+                        {chainBalancesError}
+                      </p>
+                    )}
+                    {chainBalances && (
+                      <>
+                        {chainBalances.unavailableChainCount > 0 && (
+                          <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-[10px] text-amber-800">
+                            {chainBalances.unavailableChainCount} network balance
+                            {chainBalances.unavailableChainCount === 1 ? " is" : "s are"} temporarily unreadable and excluded from the visible total.
+                          </p>
+                        )}
+                        <div className="mt-3 max-h-72 divide-y divide-black/5 overflow-y-auto">
+                          {chainBalances.chains.map((chain) => (
+                            <ChainBalanceRow key={chain.id} chain={chain} />
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -228,9 +333,9 @@ export default function DashboardPanel({ onConnectWallet }: Props) {
                   </button>
                 </div>
               )}
-              {updatedAt && (
+              {(chainBalances?.updatedAt || updatedAt) && (
                 <p className="mt-2 text-[9px] text-black/35">
-                  Updated {new Date(updatedAt).toLocaleTimeString()}
+                  Updated {new Date(chainBalances?.updatedAt ?? updatedAt!).toLocaleTimeString()}
                 </p>
               )}
             </div>
@@ -342,6 +447,63 @@ function BalanceCard({ label, value, asset }: { label: string; value: string; as
       <p className="text-[10px] text-black/45">{label}</p>
       <p className="mt-2 truncate text-xl font-semibold tracking-tight text-black">{value}</p>
       <p className="mt-1 text-[10px] font-semibold text-black/40">{asset}</p>
+    </div>
+  );
+}
+
+const CHAIN_ICONS: Record<string, typeof NetworkArc> = {
+  Arc_Testnet: NetworkArc,
+  Arbitrum_Sepolia: NetworkArbitrumSepolia,
+  Avalanche_Fuji: NetworkAvalancheFuji,
+  Base_Sepolia: NetworkBaseSepolia,
+  Codex_Testnet: NetworkCodex,
+  Ethereum_Sepolia: NetworkEthereum,
+  HyperEVM_Testnet: NetworkHyperEvm,
+  Ink_Testnet: NetworkInk,
+  Linea_Sepolia: NetworkLineaSepolia,
+  Monad_Testnet: NetworkMonadTestnet,
+  Optimism_Sepolia: NetworkOptimismSepolia,
+  Plume_Testnet: NetworkPlume,
+  Polygon_Amoy_Testnet: NetworkPolygonAmoy,
+  Sei_Testnet: NetworkSeiNetwork,
+  Sonic_Testnet: NetworkSonic,
+  Unichain_Sepolia: NetworkUnichain,
+  World_Chain_Sepolia: NetworkWorld,
+  XDC_Apothem: NetworkXdc,
+};
+
+function ChainBalanceRow({ chain }: { chain: ChainBalance }) {
+  const ChainIcon = CHAIN_ICONS[chain.id];
+  return (
+    <div className="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+      <span
+        className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-black/5 bg-white text-[8px] font-bold tracking-tight text-black/65"
+        aria-hidden="true"
+      >
+        {ChainIcon ? (
+          <ChainIcon variant="branded" size={24} />
+        ) : (
+          chain.label.slice(0, 4).toUpperCase()
+        )}
+      </span>
+      <div className="min-w-0 flex-1">
+        <a
+          href={chain.explorerUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex max-w-full items-center gap-1 truncate text-[11px] font-medium text-black hover:underline"
+        >
+          <span className="truncate">{chain.label}</span>
+          <ExternalLink className="h-2.5 w-2.5 shrink-0 text-black/30" />
+        </a>
+        <p className="text-[9px] text-black/35">Chain ID {chain.chainId}</p>
+      </div>
+      <div className="shrink-0 text-right">
+        <p className="text-[11px] font-semibold text-black">
+          {chain.status === "ready" ? formatBalance(chain.balance) : "Unavailable"}
+        </p>
+        <p className="text-[9px] text-black/35">USDC</p>
+      </div>
     </div>
   );
 }

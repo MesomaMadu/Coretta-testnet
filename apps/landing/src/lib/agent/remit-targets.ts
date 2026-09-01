@@ -1,6 +1,7 @@
 import type { BatchRecipient, TransactionPreview } from "./types";
+import { MAX_BATCH_RECIPIENTS } from "@coretta/shared";
 
-export const MAX_REMIT_RECIPIENTS = 10;
+export const MAX_REMIT_RECIPIENTS = MAX_BATCH_RECIPIENTS;
 
 export type RemitRecipientPayload =
   | { type: "wallet"; value: string }
@@ -51,7 +52,7 @@ function batchEntryToTarget(r: BatchRecipient): RemitTarget | null {
 }
 
 /**
- * Build 1–10 remit targets from a locked preview.
+ * Build 1–20 remit targets from a locked preview.
  * Multi-send uses `batch`; single send uses `recipient` + `amount`.
  */
 export function buildRemitTargets(

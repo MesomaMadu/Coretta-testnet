@@ -65,6 +65,9 @@ export async function searchUserTransfers(params: {
   since?: Date;
   until?: Date;
   destinationAddresses?: string[];
+  asset?: "USDC" | "EURC";
+  transferId?: string;
+  txHash?: string;
   limit?: number;
 }) {
   const direction = params.direction ?? "sent";
@@ -75,6 +78,9 @@ export async function searchUserTransfers(params: {
         ? { senderUserId: params.userId }
         : { recipientUserId: params.userId }),
       ...(params.states?.length ? { state: { in: params.states } } : {}),
+      ...(params.asset ? { asset: params.asset } : {}),
+      ...(params.transferId ? { id: params.transferId } : {}),
+      ...(params.txHash ? { txHash: { equals: params.txHash, mode: "insensitive" } } : {}),
       ...(params.since || params.until
         ? {
             createdAt: {
@@ -84,7 +90,9 @@ export async function searchUserTransfers(params: {
           }
         : {}),
       ...(addressFilter?.length
-        ? { destinationAddress: { in: addressFilter, mode: "insensitive" } }
+        ? direction === "received"
+          ? { senderWallet: { scaAddress: { in: addressFilter, mode: "insensitive" } } }
+          : { destinationAddress: { in: addressFilter, mode: "insensitive" } }
         : {}),
     },
     include: { senderWallet: true, recipientWallet: true },
@@ -94,6 +102,7 @@ export async function searchUserTransfers(params: {
 
   return transfers.map((transfer) => ({
     id: transfer.id,
+    direction,
     amount: formatMicroToUsdc(transfer.amountMicro),
     amountMicro: transfer.amountMicro,
     asset: transfer.asset,
@@ -101,6 +110,10 @@ export async function searchUserTransfers(params: {
     state: transfer.state,
     destinationAddress:
       transfer.destinationAddress ?? transfer.recipientWallet?.scaAddress ?? null,
+    counterpartyAddress:
+      direction === "received"
+        ? transfer.senderWallet.scaAddress
+        : transfer.destinationAddress ?? transfer.recipientWallet?.scaAddress ?? null,
     txHash: transfer.txHash,
     failureReason: transfer.failureReason ?? transfer.policyReason,
     createdAt: transfer.createdAt,

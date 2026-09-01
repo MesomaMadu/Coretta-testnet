@@ -8,6 +8,13 @@ import { createSessionForUser, loginWithIdentity } from "./auth.js";
 
 let client: PrivyClient | null = null;
 
+export function isPrivyConnectivityError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /connection|failed to fetch|network|timeout|timed out|ECONN|ENOTFOUND|EAI_AGAIN/i.test(
+    message,
+  );
+}
+
 export function isPrivyConfigured(): boolean {
   return Boolean(config.privyAppId && config.privyAppSecret);
 }
@@ -33,26 +40,32 @@ function getPrivyClient(): PrivyClient {
   return client;
 }
 
-/** Verify Privy's access token and resolve its verified email without provisioning. */
+/** Only server-verified Privy accounts may supply the Coretta email identity. */
+export function getVerifiedPrivyEmail(accounts: Array<{
+  type: string;
+  verified_at?: number;
+  address?: string | null;
+  email?: string | null;
+  subject?: string | null;
+}>) {
+  const verified = accounts.filter((account) =>
+    Number.isFinite(account.verified_at) && (account.verified_at ?? 0) > 0,
+  );
+  const emailAccount = verified.find((account) => account.type === "email" && account.address);
+  const googleAccount = verified.find((account) => account.type === "google_oauth" && account.subject && account.email);
+  const email = emailAccount?.address ?? googleAccount?.email;
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) throw new Error("PRIVY_EMAIL_REQUIRED");
+  return normalizeEmail(email);
+}
+
+/** Verify Privy's access token and resolve email OTP or Google without provisioning. */
 export async function inspectPrivyEmailAccount(accessToken: string) {
   if (!accessToken) throw new Error("PRIVY_TOKEN_MISSING");
 
   const privy = getPrivyClient();
   const token = await privy.utils().auth().verifyAccessToken(accessToken);
   const privyUser = await privy.users()._get(token.user_id);
-  const emailAccount = privyUser.linked_accounts.find(
-    (account) => account.type === "email",
-  );
-
-  if (
-    !emailAccount ||
-    !("address" in emailAccount) ||
-    emailAccount.verified_at <= 0
-  ) {
-    throw new Error("PRIVY_EMAIL_REQUIRED");
-  }
-
-  const email = normalizeEmail(emailAccount.address);
+  const email = getVerifiedPrivyEmail(privyUser.linked_accounts);
   const identity = await prisma.identity.findUnique({
     where: { type_normalizedValue: { type: "email", normalizedValue: email } },
     include: { user: { include: { wallets: true } } },

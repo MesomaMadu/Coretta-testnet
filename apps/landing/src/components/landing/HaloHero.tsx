@@ -92,17 +92,16 @@ export default function HaloHero() {
             className="mb-4 max-w-xl text-5xl font-medium leading-tight text-black md:text-6xl"
             style={{ letterSpacing: "-0.04em" }}
           >
-            Where AI makes
+            Payments planned
             <br />
-            payments for you
+            with AI
           </h1>
           <p
             className="mb-8 max-w-md text-base leading-relaxed text-black/70 md:text-lg"
             style={{ fontFamily: "'Inter', ui-sans-serif, system-ui, sans-serif" }}
           >
-            {BRAND_NAME} is an automated, reward-aware digital dollar stack for
-            USDC-first remittance on Arc Testnet, powered by {AGENT_NAME},
-            your AI copilot.
+            {BRAND_NAME} coordinates USDC and EURC payments on Arc Testnet.
+            {AGENT_NAME} turns plain language into locked previews for you to approve.
           </p>
 
           <Link

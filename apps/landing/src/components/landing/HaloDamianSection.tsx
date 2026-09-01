@@ -23,13 +23,12 @@ export default function HaloDamianSection() {
               Your remittance copilot
             </h2>
             <p className="mt-5 max-w-md text-base leading-relaxed text-black/65">
-              {AGENT_NAME} is the conversational agent inside {BRAND_NAME}. Describe a USDC send
-              or swap in plain language, and {AGENT_NAME} turns it into a locked preview you can
-              review before anything moves.
+              Ask {AGENT_NAME} to send, swap, bridge, split a batch, check balances,
+              find transactions, explain routes, or retry a recorded failure.
             </p>
             <p className="mt-4 max-w-md text-base leading-relaxed text-black/65">
-              Nothing is autonomous. You always confirm and sign in your wallet. Gas on Arc
-              Arc uses USDC for gas, so you focus on who to pay and how much.
+              Nothing moves until you approve the locked preview. {BRAND_NAME} asks for
+              wallet authorization when your account requires it.
             </p>
             <Link
               href="/app"
@@ -50,7 +49,7 @@ export default function HaloDamianSection() {
                 <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black text-[11px] font-semibold text-white">
                   1
                 </span>
-                <span>Say who to pay, how much, and which asset (USDC or EURC).</span>
+                <span>Say who to pay, how much, and which asset you want to use.</span>
               </li>
               <li className="flex gap-3">
                 <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black text-[11px] font-semibold text-white">
@@ -62,7 +61,7 @@ export default function HaloDamianSection() {
                 <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black text-[11px] font-semibold text-white">
                   3
                 </span>
-                <span>You confirm and sign. Settlement runs on Arc Testnet after approval.</span>
+                <span>You approve the plan. Wallet authorization appears when your account requires it.</span>
               </li>
             </ul>
           </div>

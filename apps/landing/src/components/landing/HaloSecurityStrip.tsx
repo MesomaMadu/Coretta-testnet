@@ -16,19 +16,18 @@ export default function HaloSecurityStrip() {
             className="mt-3 max-w-2xl text-3xl font-medium leading-tight text-white md:text-4xl"
             style={{ letterSpacing: "-0.03em" }}
           >
-            Arc Testnet settlement. You always sign.
+            Arc Testnet settlement. You always approve.
           </h2>
           <p className="mt-4 max-w-xl text-base leading-relaxed text-white/60">
-            {BRAND_NAME} binds a smart wallet to your connected EOA. {AGENT_NAME}{" "}
-            only prepares locked previews. Remittance and swaps execute after your
-            wallet approval, with Circle Paymaster USDC fees.
+            {BRAND_NAME} checks the recipient, locks the plan, and records the final
+            status. Wallet authorization is required when your account security needs it.
           </p>
           <ul className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {[
-              "Ownership signature",
-              "Smart wallet binding",
-              "USDC gas fees",
-              "Success or failure only",
+              "Locked previews",
+              "Recipient checks",
+              "Payment approvals",
+              "Receipts and history",
             ].map((item) => (
               <li
                 key={item}

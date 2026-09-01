@@ -22,7 +22,7 @@ export interface ActivityItem {
 
 interface ActivityResponseItem {
   id: string;
-  kind: "send" | "swap";
+  kind: "send" | "swap" | "bridge";
   label: string;
   status: "pending" | "complete" | "failed";
   state: string;

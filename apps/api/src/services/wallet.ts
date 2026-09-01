@@ -2,6 +2,7 @@ import { prisma } from "@coretta/db";
 import {
   createArcPublicClient,
   createSmartAccountFromOwnerKey,
+  getEurcBalanceMicro,
   getUsdcBalanceMicro,
 } from "@coretta/chain";
 import { generatePrivateKey } from "viem/accounts";
@@ -20,7 +21,10 @@ import {
 } from "./circle.js";
 import { log } from "../lib/log.js";
 
-const client = createArcPublicClient();
+const client = createArcPublicClient(config.arcRpcUrl, {
+  timeout: 3_000,
+  retryCount: 0,
+});
 
 function circleConfigured() {
   return Boolean(
@@ -252,6 +256,10 @@ export async function resolveRecipientWallet(
 
 export async function getWalletBalanceMicro(scaAddress: Hex) {
   return getUsdcBalanceMicro(client, scaAddress);
+}
+
+export async function getWalletEurcBalanceMicro(scaAddress: Hex) {
+  return getEurcBalanceMicro(client, scaAddress);
 }
 
 export async function getOwnerKeyForWallet(walletId: string): Promise<Hex> {

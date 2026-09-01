@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Flag, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ThumbsDown, ThumbsUp } from "lucide-react";
 import { useMemo, useState } from "react";
 import { apiFetch, getApiToken } from "@/lib/api";
 import type { TransactionPreview } from "@/lib/agent/types";
@@ -28,13 +28,23 @@ export default function ResponseFeedback({
   serverMessageId,
   context,
   preview,
+  transaction,
 }: {
   messageId: string;
   serverMessageId?: string;
   context: { lastUserMessage?: string };
   preview?: TransactionPreview | null;
+  transaction?: {
+    id: string;
+    status: string;
+    operationKind?: string;
+    asset: string;
+    amount: string;
+    recipient: string;
+    network: string;
+  };
 }) {
-  const [mode, setMode] = useState<"idle" | "thanks" | "negative" | "report">(
+  const [mode, setMode] = useState<"idle" | "thanks" | "negative">(
     "idle",
   );
   const [reason, setReason] = useState<NegativeReason | null>(null);
@@ -56,12 +66,13 @@ export default function ResponseFeedback({
             previewHash: preview.previewHash,
           }
         : undefined,
+      transaction,
     }),
-    [context.lastUserMessage, messageId, preview],
+    [context.lastUserMessage, messageId, preview, transaction],
   );
 
   async function sendFeedback(payload: {
-    kind: "thumbs" | "report";
+    kind: "thumbs";
     rating?: 1 | -1;
     issueType?: string | null;
     comment?: string | null;
@@ -86,7 +97,7 @@ export default function ResponseFeedback({
   }
 
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-black/40">
+    <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-black/8 pt-2 text-[11px] text-black/40">
       <button
         type="button"
         disabled={submitting}
@@ -94,35 +105,22 @@ export default function ResponseFeedback({
           await sendFeedback({ kind: "thumbs", rating: 1 });
           setMode("thanks");
         }}
-        className="rounded-full border border-black/10 bg-white px-2 py-1 transition hover:border-[#0A0A0A]/40 hover:text-black disabled:opacity-50"
-        aria-label="Thumbs up"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-black/10 bg-white transition hover:border-[#0A0A0A]/40 hover:text-black disabled:opacity-50"
+        aria-label="Helpful transaction response"
+        title="Helpful"
       >
-        <span className="inline-flex items-center gap-1">
-          <ThumbsUp className="h-3.5 w-3.5" /> Helpful
-        </span>
+        <ThumbsUp className="h-3.5 w-3.5" />
       </button>
 
       <button
         type="button"
         disabled={submitting}
         onClick={() => setMode((m) => (m === "negative" ? "idle" : "negative"))}
-        className="rounded-full border border-black/10 bg-white px-2 py-1 transition hover:border-black/25 hover:text-black disabled:opacity-50"
-        aria-label="Thumbs down"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-black/10 bg-white transition hover:border-black/25 hover:text-black disabled:opacity-50"
+        aria-label="Transaction response needs improvement"
+        title="Not quite"
       >
-        <span className="inline-flex items-center gap-1">
-          <ThumbsDown className="h-3.5 w-3.5" /> Not quite
-        </span>
-      </button>
-
-      <button
-        type="button"
-        disabled={submitting}
-        onClick={() => setMode((m) => (m === "report" ? "idle" : "report"))}
-        className="ml-auto rounded-full border border-black/10 bg-white px-2 py-1 transition hover:border-rose-400/40 hover:text-black disabled:opacity-50"
-      >
-        <span className="inline-flex items-center gap-1">
-          <Flag className="h-3.5 w-3.5" /> Report issue
-        </span>
+        <ThumbsDown className="h-3.5 w-3.5" />
       </button>
 
       <AnimatePresence>
@@ -204,53 +202,6 @@ export default function ResponseFeedback({
           </motion.div>
         )}
 
-        {mode === "report" && (
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 8 }}
-            className="mt-2 w-full rounded-2xl border border-rose-500/25 bg-rose-50 p-3"
-          >
-            <p className="mb-2 text-xs text-rose-900/80">
-              Report suspicious or confusing behavior.
-            </p>
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Describe the issue… (no secrets)"
-              className="w-full resize-none rounded-xl border border-rose-500/20 bg-white px-3 py-2 text-xs text-black/80 outline-none focus:border-rose-400/40"
-              rows={3}
-            />
-            <div className="mt-3 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setMode("idle");
-                  setText("");
-                }}
-                className="rounded-full px-3 py-1 text-[11px] text-rose-800/70 hover:text-rose-900"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={!text.trim() || submitting}
-                onClick={async () => {
-                  await sendFeedback({
-                    kind: "report",
-                    issueType: "OTHER",
-                    comment: text.trim(),
-                  });
-                  setMode("thanks");
-                  setText("");
-                }}
-                className="rounded-full border border-rose-500/30 bg-rose-600 px-3 py-1 text-[11px] text-white hover:bg-rose-700 disabled:opacity-50"
-              >
-                Send report
-              </button>
-            </div>
-          </motion.div>
-        )}
       </AnimatePresence>
     </div>
   );

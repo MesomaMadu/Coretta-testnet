@@ -6,17 +6,20 @@ import { useRouter } from "next/navigation";
 import { useAccount } from "wagmi";
 import AppSidebar from "./AppSidebar";
 import AIAgentPanel from "./AIAgentPanel";
-import DashboardPanel from "./DashboardPanel";
+import CorettaDashboard from "./CorettaDashboard";
+import ActivityPanel from "./ActivityPanel";
 import WalletConnectModal from "./WalletConnectModal";
 import SettingsPanel from "./SettingsPanel";
 import SponsorshipDashboard from "./SponsorshipDashboard";
+import ApprovalsPanel from "./ApprovalsPanel";
 import PageTransition from "./PageTransition";
 import WalletTutorial from "./WalletTutorial";
 import { useProfile } from "@/hooks/useProfile";
 import { useWalletSession, WalletSessionProvider } from "@/hooks/useWalletSession";
 import { useWalletTracking } from "@/hooks/useWalletTracking";
+import { apiFetch, getApiToken } from "@/lib/api";
 
-type AppView = "dashboard" | "chat" | "settings" | "usage";
+type AppView = "dashboard" | "chat" | "approvals" | "settings" | "usage" | "activity";
 
 /**
  * App shell redesigned to match Halo-style landing:
@@ -37,6 +40,7 @@ function AppShellContent() {
   const [walletOpen, setWalletOpen] = useState(false);
   const [view, setView] = useState<AppView>("dashboard");
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
   const { address, status } = useAccount();
   const isConnected = status === "connected";
   const {
@@ -70,6 +74,42 @@ function AppShellContent() {
     }
   }, [hydrated, isConnected, verified, profile.walletTutorialComplete, onboardingOpen]);
 
+  useEffect(() => {
+    let updating = false;
+    const updateUnread = async () => {
+      if (updating) return;
+      updating = true;
+      if (!getApiToken()) {
+        setUnreadCount(0);
+        updating = false;
+        return;
+      }
+      try {
+        const response = await apiFetch<{ unreadCount: number }>("/v1/notifications");
+        setUnreadCount(response.unreadCount);
+      } catch {
+        setUnreadCount(0);
+      } finally {
+        updating = false;
+      }
+    };
+    void updateUnread();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void updateUnread();
+    }, 30_000);
+    const onCount = (event: Event) => {
+      const count = (event as CustomEvent<{ count?: number }>).detail?.count;
+      if (typeof count === "number") setUnreadCount(count);
+    };
+    window.addEventListener("coretta-notifications-count", onCount);
+    window.addEventListener("coretta-api-session-updated", updateUnread);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("coretta-notifications-count", onCount);
+      window.removeEventListener("coretta-api-session-updated", updateUnread);
+    };
+  }, [privyAuthenticated, status]);
+
   // Track in-app navigation only when wallet ownership is verified.
   useEffect(() => {
     if (!verified || !address) return;
@@ -78,6 +118,8 @@ function AppShellContent() {
       chat: "Opened chat",
       settings: "Opened settings",
       usage: "Opened usage dashboard",
+      approvals: "Opened approvals and notifications",
+      activity: "Opened activity",
     };
     void track({
       kind: "navigation",
@@ -91,28 +133,35 @@ function AppShellContent() {
   }
 
   return (
-    <div className="app-shell relative flex h-dvh overflow-hidden bg-[#F5F5F5] text-black">
-      <div className="relative z-10 flex h-full w-full">
+    <div className="app-shell relative flex h-dvh overflow-hidden bg-black p-0 text-black md:p-3">
+      <div className="relative z-10 flex h-full w-full overflow-hidden md:rounded-[2rem] md:border md:border-white/10">
         <AppSidebar
           active={view}
           onDashboardClick={() => setView("dashboard")}
           onSettingsClick={() => setView("settings")}
           onUsageClick={() => setView("usage")}
           onChatClick={() => setView("chat")}
+          onApprovalsClick={() => setView("approvals")}
+          onActivityClick={() => setView("activity")}
           onConnectWallet={() => setWalletOpen(true)}
           connected={isConnected || Boolean(privyEmail)}
           address={address}
           email={privyEmail}
+          unreadCount={unreadCount}
         />
 
-        <main className="flex min-w-0 flex-1 flex-col bg-[#F5F5F5]">
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[#F7F5FA] pb-16 md:rounded-r-[1.9rem] md:pb-0">
           <PageTransition viewKey={view}>
             {view === "dashboard" ? (
-              <DashboardPanel onConnectWallet={() => setWalletOpen(true)} />
+              <CorettaDashboard />
             ) : view === "settings" ? (
               <SettingsPanel onConnectWallet={() => setWalletOpen(true)} />
             ) : view === "usage" ? (
               <SponsorshipDashboard />
+            ) : view === "approvals" ? (
+              <ApprovalsPanel />
+            ) : view === "activity" ? (
+              <ActivityPanel />
             ) : (
               <AIAgentPanel onRequestWallet={() => setWalletOpen(true)} />
             )}

@@ -14,6 +14,7 @@ import { usePrivy } from "@privy-io/react-auth";
 import { useAccount, useSignMessage } from "wagmi";
 import { arcTestnet } from "@/lib/chains";
 import { apiFetch, getApiToken, setApiToken, clearApiToken } from "@/lib/api";
+import { restoreCorettaSessionFromPrivy } from "@/lib/privy/coretta-session";
 import {
   buildOwnershipMessage,
   clearBoundWallet,
@@ -191,6 +192,20 @@ function useWalletSessionState(autoVerify: boolean) {
       window.removeEventListener("coretta-api-session-updated", onSessionUpdated);
   }, [syncBindings]);
 
+  // Privy persists independently from Coretta's API token. Restore the same
+  // email account after reload instead of leaving a half-authenticated state.
+  useEffect(() => {
+    if (!emailAuthenticated || !emailAddress || getApiToken()) return;
+    const timer = window.setTimeout(() => {
+      if (getApiToken()) return;
+      void restoreCorettaSessionFromPrivy(emailAddress).catch(() => {
+        // The account UI keeps the user signed in with Privy and can show a
+        // retry path without turning a failed restore into a wallet login.
+      });
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [emailAddress, emailAuthenticated]);
+
   // Wallet/auth events can also be emitted by the connect and transaction flows.
   useEffect(() => {
     const onVerified = (e: Event) => {
@@ -277,10 +292,9 @@ function useWalletSessionState(autoVerify: boolean) {
 
     const key = address.toLowerCase();
 
-    // Account switch (different address while still "connected")
+    // A connector account change must not replace the active Coretta account.
     if (lastStableAddress && lastStableAddress !== key) {
       clearWalletSession();
-      clearApiToken();
       ownershipVerifyInFlight = null;
       setVerified(false);
       setVerifyError(null);
@@ -322,20 +336,26 @@ function useWalletSessionState(autoVerify: boolean) {
   );
 
   const verifyOwnership = useCallback(
-    async (opts?: { force?: boolean }) => {
-      if (!address) return false;
-      if (chainId !== arcTestnet.id) {
+    async (opts?: {
+      force?: boolean;
+      targetAddress?: `0x${string}`;
+      targetChainId?: number;
+    }) => {
+      const walletAddress = opts?.targetAddress ?? address;
+      const walletChainId = opts?.targetChainId ?? chainId;
+      if (!walletAddress) return false;
+      if (walletChainId !== arcTestnet.id) {
         setVerified(false);
-        setVerifyError("Switch your wallet to Arc Testnet before signing in.");
+        setVerifyError("Switch your wallet to Arc Testnet before continuing.");
         return false;
       }
 
       // Already signed this connection — never open another wallet prompt.
-      if (hasValidOwnershipSession(address)) {
+      if (hasValidOwnershipSession(walletAddress)) {
         setVerified(true);
-        setOwnershipPromptedAddress(address);
+        setOwnershipPromptedAddress(walletAddress);
         setVerifyError(null);
-        void refreshUsage(address);
+        void refreshUsage(walletAddress);
         return true;
       }
 
@@ -351,15 +371,48 @@ function useWalletSessionState(autoVerify: boolean) {
       setVerifying(true);
       setVerifyError(null);
       // Remember we asked so remounts / reconnect flicker cannot open a second prompt.
-      setOwnershipPromptedAddress(address);
+      setOwnershipPromptedAddress(walletAddress);
 
       ownershipVerifyInFlight = (async () => {
         try {
           const message = buildOwnershipMessage(
-            address,
-            chainId,
+            walletAddress,
+            walletChainId,
           );
-          const signature = await signMessageAsync({ message });
+          const signature = await signMessageAsync({
+            account: walletAddress,
+            message,
+          });
+
+          const existingCorettaSession = Boolean(getApiToken());
+          if (existingCorettaSession) {
+            const linked = await apiFetch<{
+              walletAddress: string;
+              smartWalletAddress?: string | null;
+              smartWalletActivated?: boolean;
+              boundPrimaryWallet?: string | null;
+            }>("/v1/wallet/link-external", {
+              method: "POST",
+              body: JSON.stringify({
+                address: walletAddress,
+                message,
+                signature,
+              }),
+            });
+
+            setWalletVerified(walletAddress);
+            setBoundWallet(linked.boundPrimaryWallet ?? walletAddress);
+            setBound((linked.boundPrimaryWallet ?? walletAddress).toLowerCase());
+            setVerified(true);
+            setSmartWalletActive(linked.smartWalletActivated ?? true);
+            setSmartActive(linked.smartWalletActivated ?? true);
+            setSmartWalletAddress(linked.smartWalletAddress ?? null);
+            setRequiresWalletSignature(true);
+            setVerifyError(null);
+            await syncBindings();
+            void refreshUsage(walletAddress);
+            return true;
+          }
 
           const auth = await apiFetch<{
             token: string;
@@ -372,16 +425,16 @@ function useWalletSessionState(autoVerify: boolean) {
             method: "POST",
             auth: false,
             body: JSON.stringify({
-              address,
+              address: walletAddress,
               message,
               signature,
             }),
           });
 
           setApiToken(auth.token);
-          setWalletVerified(address);
-          setBoundWallet(auth.boundPrimaryWallet ?? address);
-          setBound((auth.boundPrimaryWallet ?? address).toLowerCase());
+          setWalletVerified(walletAddress);
+          setBoundWallet(auth.boundPrimaryWallet ?? walletAddress);
+          setBound((auth.boundPrimaryWallet ?? walletAddress).toLowerCase());
           setVerified(true);
           setSmartWalletActive(true);
           setSmartActive(true);
@@ -397,11 +450,11 @@ function useWalletSessionState(autoVerify: boolean) {
           return true;
         } catch (err) {
           // Keep connector session. Do not auto-reprompt; surface error for manual retry.
-          clearWalletVerification(address);
+          clearWalletVerification(walletAddress);
           setVerified(false);
           setUsageMetrics(null);
           // Keep prompted flag so we do not spam another automatic sign request.
-          setOwnershipPromptedAddress(address);
+          setOwnershipPromptedAddress(walletAddress);
           const msg =
             err instanceof Error
               ? err.message
@@ -496,12 +549,19 @@ function useWalletSessionState(autoVerify: boolean) {
     [verifyOwnership],
   );
 
+  const linkWalletToCurrentAccount = useCallback(
+    (targetAddress: `0x${string}`, targetChainId: number) =>
+      verifyOwnership({ force: true, targetAddress, targetChainId }),
+    [verifyOwnership],
+  );
+
   return {
     verified,
     smartWalletActive,
     verifying,
     activating,
     verifyOwnership: retryVerifyOwnership,
+    linkWalletToCurrentAccount,
     activateSmartWallet,
     canTransact,
     boundWallet,

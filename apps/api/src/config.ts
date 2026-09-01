@@ -49,6 +49,8 @@ export const config = {
   circleEntitySecret: process.env.CIRCLE_ENTITY_SECRET,
   circleWalletSetId: process.env.CIRCLE_WALLET_SET_ID,
   kitKey: process.env.KIT_KEY,
+  blockedEvmAddresses: process.env.CORETTA_BLOCKED_EVM_ADDRESSES ?? "",
+  allowedContractAddresses: process.env.CORETTA_ALLOWED_CONTRACT_ADDRESSES ?? "",
   privyAppId: process.env.PRIVY_APP_ID,
   privyAppSecret: process.env.PRIVY_APP_SECRET,
   privyJwtVerificationKey: process.env.PRIVY_JWT_VERIFICATION_KEY,

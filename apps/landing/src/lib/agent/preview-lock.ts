@@ -8,7 +8,10 @@ export async function buildLockedPreview(
   const id = `prev_${createdAt}_${Math.random().toString(36).slice(2, 9)}`;
   const batchCanonical = partial.batch
     ? JSON.stringify(
-        partial.batch.map((r) => `${r.name}:${r.amount}:${r.identityType}`),
+        partial.batch.map(
+          (r) =>
+            `${r.name}:${r.amount}:${r.identityType}:${r.destinationChain ?? ""}:${r.destinationChainLabel ?? ""}`,
+        ),
       )
     : "";
   const previewHash = await hashPreview({
@@ -21,8 +24,16 @@ export async function buildLockedPreview(
     swapRoute: partial.swapRoute ?? "",
     sponsorship: partial.sponsorship,
     transactionFee: partial.transactionFee ?? "",
+    sourceChain: partial.sourceChain ?? "",
+    destinationChain: partial.destinationChain ?? "",
+    destinationChainLabel: partial.destinationChainLabel ?? "",
+    bridgeOperationId: partial.bridgeOperationId ?? "",
+    estimatedBridgeFee: partial.estimatedBridgeFee ?? "",
     batch: batchCanonical,
     totalAmount: partial.totalAmount ?? "",
+    allocation: partial.allocation ?? "",
+    steps: JSON.stringify(partial.steps),
+    quotedAt: partial.quotedAt ?? "",
   });
   return { ...partial, id, previewHash, createdAt };
 }
@@ -32,7 +43,10 @@ export async function verifyPreviewIntegrity(
 ): Promise<boolean> {
   const batchCanonical = preview.batch
     ? JSON.stringify(
-        preview.batch.map((r) => `${r.name}:${r.amount}:${r.identityType}`),
+        preview.batch.map(
+          (r) =>
+            `${r.name}:${r.amount}:${r.identityType}:${r.destinationChain ?? ""}:${r.destinationChainLabel ?? ""}`,
+        ),
       )
     : "";
   const current = await hashPreview({
@@ -45,8 +59,16 @@ export async function verifyPreviewIntegrity(
     swapRoute: preview.swapRoute ?? "",
     sponsorship: preview.sponsorship,
     transactionFee: preview.transactionFee ?? "",
+    sourceChain: preview.sourceChain ?? "",
+    destinationChain: preview.destinationChain ?? "",
+    destinationChainLabel: preview.destinationChainLabel ?? "",
+    bridgeOperationId: preview.bridgeOperationId ?? "",
+    estimatedBridgeFee: preview.estimatedBridgeFee ?? "",
     batch: batchCanonical,
     totalAmount: preview.totalAmount ?? "",
+    allocation: preview.allocation ?? "",
+    steps: JSON.stringify(preview.steps),
+    quotedAt: preview.quotedAt ?? "",
   });
   return current === preview.previewHash;
 }

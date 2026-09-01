@@ -81,14 +81,5 @@ export function useVoice({ onTranscript }: UseVoiceOptions) {
     setListening(false);
   }, []);
 
-  const speak = useCallback((text: string) => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 1;
-    utter.pitch = 1;
-    window.speechSynthesis.speak(utter);
-  }, []);
-
-  return { listening, supported, startListening, stopListening, speak };
+  return { listening, supported, startListening, stopListening };
 }

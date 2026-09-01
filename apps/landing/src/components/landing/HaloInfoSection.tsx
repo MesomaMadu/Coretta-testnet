@@ -30,9 +30,9 @@ export default function HaloInfoSection() {
             </Link>
           </div>
           <p className="text-2xl leading-relaxed text-black/70 md:text-3xl">
-            {BRAND_NAME} is a USDC-first remittance product on Arc Testnet. Your
-            savings stay dollar-anchored while {AGENT_NAME} routes transfers with
-            USDC-denominated gas and smart-wallet security.
+            Your balances stay onchain in the wallet tied to your account. {AGENT_NAME}
+            prepares sends, swaps, USDC bridges, and batch payments while {BRAND_NAME}
+            records approvals, status, and receipts.
           </p>
         </div>
 
@@ -49,11 +49,10 @@ export default function HaloInfoSection() {
               className="text-2xl font-medium leading-snug text-black"
               style={{ letterSpacing: "-0.02em" }}
             >
-              Transfers that settle
+              Send and swap on Arc
             </h3>
             <p className="mt-3 max-w-xs text-base text-black/70">
-              Send USDC with locked previews, ownership signatures, and Circle
-              Paymaster-enabled USDC gas on Arc Testnet.
+              Send USDC or EURC and swap between them after reviewing a locked preview.
             </p>
           </article>
 
@@ -65,13 +64,12 @@ export default function HaloInfoSection() {
               className="text-2xl font-medium leading-snug text-white"
               style={{ letterSpacing: "-0.02em" }}
             >
-              Always fluid,
+              Bridge USDC
               <br />
-              always pegged.
+              with CCTP
             </h3>
             <p className="text-base text-white/60">
-              Stay dollar-anchored with on-demand access to funds, no claim links
-              or seed phrases for end users.
+              Move USDC from Arc Testnet to supported EVM testnets with Circle CCTP.
             </p>
           </article>
 
@@ -83,13 +81,12 @@ export default function HaloInfoSection() {
               className="text-2xl font-medium leading-snug text-white"
               style={{ letterSpacing: "-0.02em" }}
             >
-              Fully
+              Pay up
               <br />
-              automated
+              to 20 wallets
             </h3>
             <p className="text-base text-white/60">
-              Skip chain complexity. {AGENT_NAME} prepares the transfer; you only
-              confirm and sign.
+              Split equal, varied, or fixed amounts across as many as 20 wallets and chains.
             </p>
           </article>
         </div>

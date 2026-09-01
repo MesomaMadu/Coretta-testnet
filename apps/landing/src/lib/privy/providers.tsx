@@ -12,7 +12,7 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
     <PrivyProvider
       appId={appId}
       config={{
-        loginMethods: ["email"],
+        loginMethods: ["email", "google"],
         embeddedWallets: { ethereum: { createOnLogin: "off" } },
       }}
     >

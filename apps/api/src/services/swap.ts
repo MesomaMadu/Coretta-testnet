@@ -33,7 +33,7 @@ function getCircleSwapSdk() {
   return circleSwapSdk;
 }
 
-export type SwapToken = "USDC" | "EURC" | "NATIVE" | "USDT";
+export type SwapToken = "USDC" | "EURC" | "NATIVE";
 
 export interface SwapRequest {
   userId: string;
@@ -66,7 +66,110 @@ export interface SwapResultBlocked {
 
 export type SwapServiceResult = SwapResultOk | SwapResultBlocked;
 
+export type SwapEstimateResult =
+  | {
+      ok: true;
+      chain: "Arc_Testnet";
+      tokenIn: string;
+      tokenOut: string;
+      amountIn: string;
+      amountOut: string;
+      quotedAt: string;
+    }
+  | SwapResultBlocked;
+
 const ARC_CHAIN = "Arc_Testnet" as const;
+
+function validateSwapRequest(req: SwapRequest): SwapResultBlocked | string {
+  if (isArcUsdcNativeNoop(req.tokenIn, req.tokenOut)) {
+    return {
+      ok: false,
+      code: "ALREADY_GAS_TOKEN",
+      message: "Already using network gas token.",
+    };
+  }
+  if (req.tokenIn.toUpperCase() === req.tokenOut.toUpperCase()) {
+    return {
+      ok: false,
+      code: "SAME_TOKEN",
+      message: "Source and destination tokens are the same.",
+    };
+  }
+  if (!config.kitKey) {
+    return { ok: false, code: "KIT_KEY_MISSING", message: "KIT_KEY is not configured on the server." };
+  }
+  if (!config.circleApiKey || !config.circleEntitySecret) {
+    return {
+      ok: false,
+      code: "CIRCLE_CONFIG_MISSING",
+      message: "CIRCLE_API_KEY and CIRCLE_ENTITY_SECRET are required for swaps.",
+    };
+  }
+  const amount = req.amountIn.trim();
+  if (!/^\d+(\.\d{1,6})?$/.test(amount) || Number(amount) <= 0) {
+    return { ok: false, code: "INVALID_AMOUNT", message: "Invalid swap amount." };
+  }
+  return amount;
+}
+
+function mapSwapFailure(err: unknown, req: SwapRequest): SwapResultBlocked {
+  const message = err instanceof Error ? err.message : "SWAP_FAILED";
+  const noRoute = /no route available|route or resource not found/i.test(message);
+  const runtimeDependencyFailure =
+    /ERR_REQUIRE_ESM|require\(\) of ES Module|rpc-websockets|uuid\/dist/i.test(message);
+  log.swap("Swap request failed", {
+    message,
+    tokenIn: req.tokenIn,
+    tokenOut: req.tokenOut,
+    amountIn: req.amountIn,
+  });
+  return {
+    ok: false,
+    code: noRoute
+      ? "SWAP_ROUTE_UNAVAILABLE"
+      : runtimeDependencyFailure
+        ? "SWAP_SERVICE_UNAVAILABLE"
+        : "SWAP_FAILED",
+    message: noRoute
+      ? `No ${req.tokenIn} to ${req.tokenOut} liquidity route is available on Arc Testnet right now. Try the reverse direction or retry later.`
+      : runtimeDependencyFailure
+        ? "The swap service is temporarily unavailable. Please retry shortly."
+        : message.includes("wallet") || message.includes("not found")
+          ? "Swap failed: wallet must be a Circle developer-controlled wallet on Arc Testnet. Local SCAs may not be eligible for App Kit swaps."
+          : "The swap could not be completed. Check the current route and wallet balance, then try again.",
+  };
+}
+
+export async function estimateTokenSwap(req: SwapRequest): Promise<SwapEstimateResult> {
+  const validated = validateSwapRequest(req);
+  if (typeof validated !== "string") return validated;
+  try {
+    const { AppKit, createCircleWalletsAdapter } = getCircleSwapSdk();
+    const kit = new AppKit();
+    const adapter = createCircleWalletsAdapter({
+      apiKey: config.circleApiKey!,
+      entitySecret: config.circleEntitySecret!,
+    });
+    const estimate = await kit.estimateSwap({
+      from: { adapter, chain: ARC_CHAIN, address: req.walletAddress },
+      tokenIn: req.tokenIn,
+      tokenOut: req.tokenOut,
+      amountIn: validated,
+      config: { kitKey: config.kitKey! },
+    });
+    return {
+      ok: true,
+      chain: ARC_CHAIN,
+      tokenIn: req.tokenIn,
+      tokenOut: req.tokenOut,
+      amountIn: validated,
+      amountOut: estimate.estimatedOutput.amount,
+      quotedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    return mapSwapFailure(err, req);
+  }
+}
 
 /**
  * On Arc, USDC is the native gas token — USDC↔NATIVE is a no-op.
@@ -80,50 +183,16 @@ export function isArcUsdcNativeNoop(tokenIn: string, tokenOut: string): boolean 
 }
 
 export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceResult> {
-  if (isArcUsdcNativeNoop(req.tokenIn, req.tokenOut)) {
-    return {
-      ok: false,
-      code: "ALREADY_GAS_TOKEN",
-      message: "Already using network gas token.",
-    };
-  }
-
-  if (req.tokenIn.toUpperCase() === req.tokenOut.toUpperCase()) {
-    return {
-      ok: false,
-      code: "SAME_TOKEN",
-      message: "Source and destination tokens are the same.",
-    };
-  }
-
-  if (!config.kitKey) {
-    log.swap("KIT_KEY missing");
-    return {
-      ok: false,
-      code: "KIT_KEY_MISSING",
-      message: "KIT_KEY is not configured on the server.",
-    };
-  }
-  if (!config.circleApiKey || !config.circleEntitySecret) {
-    log.swap("Circle credentials missing");
-    return {
-      ok: false,
-      code: "CIRCLE_CONFIG_MISSING",
-      message: "CIRCLE_API_KEY and CIRCLE_ENTITY_SECRET are required for swaps.",
-    };
-  }
-
-  const amount = req.amountIn.trim();
-  if (!/^\d+(\.\d{1,6})?$/.test(amount) || Number(amount) <= 0) {
-    return { ok: false, code: "INVALID_AMOUNT", message: "Invalid swap amount." };
-  }
+  const validated = validateSwapRequest(req);
+  if (typeof validated !== "string") return validated;
+  const amount = validated;
 
   try {
     const { AppKit, createCircleWalletsAdapter } = getCircleSwapSdk();
     const kit = new AppKit();
     const adapter = createCircleWalletsAdapter({
-      apiKey: config.circleApiKey,
-      entitySecret: config.circleEntitySecret,
+      apiKey: config.circleApiKey!,
+      entitySecret: config.circleEntitySecret!,
     });
 
     log.info("swap", "Executing swap", {
@@ -147,7 +216,7 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
       tokenOut: req.tokenOut,
       amountIn: amount,
       config: {
-        kitKey: config.kitKey,
+        kitKey: config.kitKey!,
       },
     });
 
@@ -161,7 +230,7 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
       tokenOut: req.tokenOut,
       amountIn: amount,
       config: {
-        kitKey: config.kitKey,
+        kitKey: config.kitKey!,
       },
     });
 
@@ -179,11 +248,6 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
         counterfactual: true,
       },
       data: { counterfactual: false },
-    });
-    await trackUsageEvent({
-      walletAddress: usageWallet,
-      userId: req.userId,
-      key: "swapRequestCount",
     });
     // Gas on Arc is USDC-sponsored for chatbot swaps — count toward sponsorship quota.
     await trackUsageEvent({
@@ -216,11 +280,6 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "SWAP_FAILED";
-    const noRoute = /no route available|route or resource not found/i.test(message);
-    const runtimeDependencyFailure =
-      /ERR_REQUIRE_ESM|require\(\) of ES Module|rpc-websockets|uuid\/dist/i.test(
-        message,
-      );
     log.swap("Swap execution failed", { message });
     await createAuditEvent({
       actorId: req.userId,
@@ -232,20 +291,6 @@ export async function executeTokenSwap(req: SwapRequest): Promise<SwapServiceRes
         amountIn: amount,
       },
     });
-    return {
-      ok: false,
-      code: noRoute
-        ? "SWAP_ROUTE_UNAVAILABLE"
-        : runtimeDependencyFailure
-          ? "SWAP_SERVICE_UNAVAILABLE"
-          : "SWAP_FAILED",
-      message: noRoute
-        ? `No ${req.tokenIn} to ${req.tokenOut} liquidity route is available on Arc Testnet right now. Try the reverse direction or retry later.`
-        : runtimeDependencyFailure
-          ? "The swap service is temporarily unavailable. Please retry shortly."
-        : message.includes("wallet") || message.includes("not found")
-          ? "Swap failed: wallet must be a Circle developer-controlled wallet on Arc Testnet. Local SCAs may not be eligible for App Kit swaps."
-          : message,
-    };
+    return mapSwapFailure(err, req);
   }
 }

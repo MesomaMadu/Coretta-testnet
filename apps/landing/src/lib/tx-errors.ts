@@ -4,8 +4,14 @@ export function humanizeTxFailure(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   const lower = raw.toLowerCase();
 
+  if (lower.includes("recipient rejected") || lower.includes("approval_rejected")) {
+    return "The recipient rejected this payment request.";
+  }
+  if (lower.includes("approval expired") || lower.includes("approval_expired")) {
+    return "The recipient approval window expired.";
+  }
   if (lower.includes("user rejected") || lower.includes("denied") || lower.includes("rejected")) {
-    return "User rejected the request.";
+    return "The wallet owner rejected the request.";
   }
   if (lower.includes("insufficient") || lower.includes("balance")) {
     return "Your wallet does not contain enough funds to complete this transfer.";
@@ -41,6 +47,6 @@ export function mapTransferStateToLifecycle(
   state: string,
 ): "pending" | "settled" | "failed" {
   if (state === "SETTLED" || state === "INCLUDED") return "settled";
-  if (state === "FAILED" || state === "POLICY_DENIED") return "failed";
+  if (["FAILED", "POLICY_DENIED", "REJECTED", "EXPIRED"].includes(state)) return "failed";
   return "pending";
 }

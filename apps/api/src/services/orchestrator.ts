@@ -24,9 +24,26 @@ import {
 import { log } from "../lib/log.js";
 import { config } from "../config.js";
 import { trackUsageEvent } from "./limits.js";
+import { createUserNotification } from "./approvals.js";
+import type { Prisma } from "@prisma/client";
 
 const client = createArcPublicClient(config.arcRpcUrl);
 const circleReconciliationJobs = new Map<string, Promise<void>>();
+
+async function createTransferIdempotently(data: Prisma.TransferUncheckedCreateInput) {
+  try {
+    return await prisma.transfer.create({ data });
+  } catch (error) {
+    if ((error as { code?: string }).code === "P2002") {
+      const existing = await prisma.transfer.findUnique({
+        where: { idempotencyKey: data.idempotencyKey },
+      });
+      if (existing && existing.senderUserId === data.senderUserId) return existing;
+      if (existing) throw new Error("IDEMPOTENCY_KEY_CONFLICT");
+    }
+    throw error;
+  }
+}
 
 export async function createRemittance({
   senderUserId,
@@ -46,7 +63,8 @@ export async function createRemittance({
   const existing = await prisma.transfer.findUnique({
     where: { idempotencyKey },
   });
-  if (existing) return existing;
+  if (existing && existing.senderUserId === senderUserId) return existing;
+  if (existing) throw new Error("IDEMPOTENCY_KEY_CONFLICT");
 
   const sender = await prisma.user.findUniqueOrThrow({
     where: { id: senderUserId },
@@ -108,36 +126,32 @@ export async function createRemittance({
   });
 
   if (!policy.allowed || !policy.amountMicro) {
-    return prisma.transfer.create({
-      data: {
-        idempotencyKey,
-        senderUserId,
-        recipientUserId: recipientUser?.id ?? null,
-        senderWalletId: senderWallet.id,
-        recipientWalletId: recipientWallet?.id ?? null,
-        destinationAddress,
-        amountMicro: 0n,
-        asset,
-        state: "POLICY_DENIED",
-        policyReason: policy.reason,
-        riskScore: policy.riskScore,
-      },
-    });
-  }
-
-  const transfer = await prisma.transfer.create({
-    data: {
+    return createTransferIdempotently({
       idempotencyKey,
       senderUserId,
       recipientUserId: recipientUser?.id ?? null,
       senderWalletId: senderWallet.id,
       recipientWalletId: recipientWallet?.id ?? null,
       destinationAddress,
-      amountMicro: policy.amountMicro,
+      amountMicro: 0n,
       asset,
-      state: "POLICY_OK",
+      state: "POLICY_DENIED",
+      policyReason: policy.reason,
       riskScore: policy.riskScore,
-    },
+    });
+  }
+
+  const transfer = await createTransferIdempotently({
+    idempotencyKey,
+    senderUserId,
+    recipientUserId: recipientUser?.id ?? null,
+    senderWalletId: senderWallet.id,
+    recipientWalletId: recipientWallet?.id ?? null,
+    destinationAddress,
+    amountMicro: policy.amountMicro,
+    asset,
+    state: "POLICY_OK",
+    riskScore: policy.riskScore,
   });
 
   return transfer;
@@ -167,6 +181,7 @@ async function markSettledAndBumpLimits(params: {
         ...(params.circleTxId ? { circleTxId: params.circleTxId } : {}),
         failureReason: null,
         settledAt: new Date(),
+        limitReservedAt: null,
       },
     });
     await tx.wallet.updateMany({
@@ -179,12 +194,12 @@ async function markSettledAndBumpLimits(params: {
     const limits = await tx.userLimit.findUnique({
       where: { userId: t.senderUserId },
     });
-    if (limits) {
+    if (limits && !existing.limitReservedAt) {
       await tx.userLimit.update({
         where: { userId: t.senderUserId },
         data: {
-          dailyTxCount: limits.dailyTxCount + 1,
-          dailySentMicro: limits.dailySentMicro + t.amountMicro,
+          dailyTxCount: { increment: 1 },
+          dailySentMicro: { increment: t.amountMicro },
         },
       });
     }
@@ -247,17 +262,94 @@ async function markSettledAndBumpLimits(params: {
     },
   });
 
+  const approval = await prisma.transferApproval.findUnique({
+    where: { transferId: params.transferId },
+  });
+  if (approval) {
+    await Promise.all([
+      createUserNotification({
+        userId: result.transfer.senderUserId,
+        transferId: result.transfer.id,
+        approvalId: approval.id,
+        type: "TRANSFER_SETTLED",
+        title: "Payment settled",
+        body: `${formatMicroToUsdc(result.transfer.amountMicro)} ${result.transfer.asset} settled on Arc Testnet.`,
+      }),
+      result.transfer.recipientUserId
+        ? createUserNotification({
+            userId: result.transfer.recipientUserId,
+            transferId: result.transfer.id,
+            approvalId: approval.id,
+            type: "TRANSFER_RECEIVED",
+            title: "Payment received",
+            body: `${formatMicroToUsdc(result.transfer.amountMicro)} ${result.transfer.asset} settled in your Coretta wallet.`,
+          })
+        : Promise.resolve(),
+    ]);
+  }
+
   return result.transfer;
 }
 
+function sameUtcDay(a: Date, b: Date) {
+  return (
+    a.getUTCFullYear() === b.getUTCFullYear() &&
+    a.getUTCMonth() === b.getUTCMonth() &&
+    a.getUTCDate() === b.getUTCDate()
+  );
+}
+
+async function releaseReservedLimits(transferId: string) {
+  await prisma.$transaction(async (tx) => {
+    const transfer = await tx.transfer.findUnique({ where: { id: transferId } });
+    if (!transfer?.limitReservedAt) return;
+    const limits = await tx.userLimit.findUnique({
+      where: { userId: transfer.senderUserId },
+    });
+    if (limits && sameUtcDay(transfer.limitReservedAt, limits.lastResetAt)) {
+      await tx.userLimit.update({
+        where: { userId: transfer.senderUserId },
+        data: {
+          dailyTxCount: Math.max(0, limits.dailyTxCount - 1),
+          dailySentMicro:
+            limits.dailySentMicro >= transfer.amountMicro
+              ? limits.dailySentMicro - transfer.amountMicro
+              : 0n,
+        },
+      });
+    }
+    await tx.transfer.update({
+      where: { id: transferId },
+      data: { limitReservedAt: null },
+    });
+  });
+}
+
 async function markCircleTransferFailed(transferId: string, reason: string) {
-  await prisma.transfer.updateMany({
+  const updated = await prisma.transfer.updateMany({
     where: {
       id: transferId,
-      state: { notIn: ["SETTLED", "INCLUDED"] },
+      state: { notIn: ["SETTLED", "INCLUDED", "FAILED"] },
     },
     data: { state: "FAILED", failureReason: reason },
   });
+  if (updated.count > 0) {
+    await releaseReservedLimits(transferId);
+    const transfer = await prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: { approval: true },
+    });
+    if (transfer?.approval) {
+      await createUserNotification({
+        userId: transfer.senderUserId,
+        transferId,
+        approvalId: transfer.approval.id,
+        type: "TRANSFER_FAILED",
+        title: "Payment failed",
+        body: `The ${formatMicroToUsdc(transfer.amountMicro)} ${transfer.asset} payment failed after approval.`,
+      });
+    }
+  }
 }
 
 /** Refresh a submitted Circle transfer without resubmitting or double-counting it. */
@@ -358,6 +450,9 @@ export async function executeRemittance(transferId: string) {
   if (transfer.state === "POLICY_DENIED") {
     throw new Error(`TRANSFER_DENIED:${transfer.policyReason}`);
   }
+  if (["PENDING_APPROVAL", "REJECTED", "EXPIRED"].includes(transfer.state)) {
+    throw new Error(`TRANSFER_NOT_EXECUTABLE:${transfer.state}`);
+  }
 
   const destinationAddress =
     transfer.destinationAddress ?? transfer.recipientWallet?.scaAddress;
@@ -457,6 +552,20 @@ export async function executeRemittance(transferId: string) {
         where: { id: transferId },
         data: { state: "FAILED", failureReason: message },
       });
+      await releaseReservedLimits(transferId);
+      const approval = await prisma.transferApproval.findUnique({
+        where: { transferId },
+      });
+      if (approval) {
+        await createUserNotification({
+          userId: transfer.senderUserId,
+          transferId,
+          approvalId: approval.id,
+          type: "TRANSFER_FAILED",
+          title: "Payment failed",
+          body: `The ${formatMicroToUsdc(transfer.amountMicro)} ${transfer.asset} payment failed after approval.`,
+        });
+      }
     }
     throw err;
   }

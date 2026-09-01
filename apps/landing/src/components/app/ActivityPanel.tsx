@@ -1,241 +1,119 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  Activity,
+  ArrowDownLeft,
+  ArrowUpRight,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  Clock,
+  Clock3,
   ExternalLink,
   RefreshCw,
-  X,
+  Search,
   XCircle,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
 import {
   formatAbsoluteTime,
-  formatRelativeTime,
   useActivityFeed,
+  type ActivityItem,
 } from "@/hooks/useActivityFeed";
 
-const ARC_EXPLORER = "https://testnet.arcscan.app";
+export default function ActivityPanel() {
+  const [query, setQuery] = useState("");
+  const { items, identityConnected, hasApiSession, loading, loadError, refresh } =
+    useActivityFeed();
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return items;
+    return items.filter((item) =>
+      [item.label, item.asset, item.amount, item.recipient, item.network, item.state]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(normalized)),
+    );
+  }, [items, query]);
 
-function DetailRow({
-  label,
-  value,
-  mono,
-  href,
-}: {
-  label: string;
-  value?: string | null;
-  mono?: boolean;
-  href?: string;
-}) {
-  if (!value) return null;
+  const emptyMessage = !identityConnected
+    ? "Sign in to view your activity."
+    : !hasApiSession
+      ? "Your Coretta session has expired. Sign in again to continue."
+      : loadError ?? "No activity matches this search.";
+
   return (
-    <div className="flex flex-col gap-0.5 border-t border-black/5 pt-1.5 first:border-0 first:pt-0">
-      <span className="text-[9px] font-medium uppercase tracking-wide text-black/40">
-        {label}
-      </span>
-      {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={cn(
-            "inline-flex items-center gap-1 break-all text-[10px] text-black underline-offset-2 hover:underline",
-            mono && "font-mono",
-          )}
-        >
-          {value}
-          <ExternalLink className="h-3 w-3 shrink-0 opacity-50" />
-        </a>
-      ) : (
-        <span
-          className={cn(
-            "break-all text-[10px] text-black/80",
-            mono && "font-mono",
-          )}
-        >
-          {value}
-        </span>
-      )}
+    <div className="h-full overflow-y-auto bg-[#F7F5FA] px-4 py-5 text-[#17131F] sm:px-6 lg:px-8">
+      <div className="mx-auto w-full max-w-[88rem]">
+        <header className="flex flex-wrap items-end justify-between gap-4 border-b border-[#211D32]/8 pb-5">
+          <div>
+            <p className="text-xs text-[#746D80]">Coretta records</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">Activity</h1>
+            <p className="mt-1 text-sm text-[#746D80]">Every send, swap, and bridge in one place.</p>
+          </div>
+          <div className="flex w-full gap-2 sm:w-auto">
+            <label className="relative min-w-0 flex-1 sm:w-72">
+              <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#91899D]" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search activity"
+                className="h-10 w-full rounded-full bg-[#ECE9EF] pl-11 pr-4 text-sm outline-none ring-[#7C4DFF]/25 transition focus:bg-white focus:ring-2"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={refresh}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-[#211D32] text-white"
+              aria-label="Refresh activity"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+        </header>
+
+        <section className="mt-6 overflow-hidden rounded-[1.8rem] border border-[#211D32]/8 bg-white p-4 shadow-[0_18px_45px_rgba(41,35,62,0.08)] sm:p-6">
+          <div className="overflow-x-auto">
+            <div className="min-w-[48rem]">
+              <div className="grid grid-cols-[minmax(0,1.45fr)_10rem_8rem_9rem_2rem] px-4 pb-3 text-[10px] font-medium uppercase tracking-[0.12em] text-[#9A93A3]">
+                <span>Activity</span><span>Date</span><span>Status</span><span className="text-right">Amount</span><span />
+              </div>
+              <div className="space-y-2">
+                {filtered.map((item) => <ActivityTableRow key={item.id} item={item} />)}
+                {!filtered.length && (
+                  <p className="rounded-2xl bg-[#F7F5FA] px-4 py-12 text-center text-sm text-[#81798C]">
+                    {loading ? "Loading activity" : emptyMessage}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
 
-interface Props {
-  onClose: () => void;
-  variant?: "sidebar" | "main";
-}
-
-export default function ActivityPanel({ onClose, variant = "sidebar" }: Props) {
-  const isMain = variant === "main";
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const {
-    items,
-    identityConnected,
-    hasApiSession,
-    canShowHistory,
-    loading,
-    loadError,
-    refresh,
-  } = useActivityFeed();
-
+function ActivityTableRow({ item }: { item: ActivityItem }) {
+  const StatusIcon = item.status === "complete" ? CheckCircle2 : item.status === "failed" ? XCircle : Clock3;
+  const statusClass = item.status === "complete" ? "bg-[#DDF5E8] text-[#17734D]" : item.status === "failed" ? "bg-[#FFE2E4] text-[#B32631]" : "bg-[#F2EFF5] text-[#716978]";
+  const received = /receive/i.test(item.label);
   return (
-    <aside
-      id="activity"
-      className={cn(
-        "flex h-full flex-col bg-[#F5F5F5] p-4",
-        isMain
-          ? "w-full flex-1"
-          : "fixed right-0 top-0 z-30 w-80 shrink-0 border-l border-black/10 bg-white shadow-2xl md:relative md:z-auto md:shadow-none",
-      )}
-    >
-      <div className="mb-4 flex items-center justify-between gap-2">
-        <h2 className="flex items-center gap-2 text-sm font-semibold text-black">
-          <Activity className="h-4 w-4 text-black" />
-          Activity
-        </h2>
-        <div className="flex items-center gap-1">
-          {canShowHistory && (
-            <button
-              type="button"
-              onClick={refresh}
-              className="rounded-full p-1 text-black/40 hover:bg-black/5 hover:text-black"
-              aria-label="Refresh activity"
-              disabled={loading}
-            >
-              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full p-1 text-black/40 hover:bg-black/5 hover:text-black"
-            aria-label="Close activity panel"
-          >
-            <X className="h-4 w-4" />
-          </button>
+    <div className="grid grid-cols-[minmax(0,1.45fr)_10rem_8rem_9rem_2rem] items-center rounded-2xl bg-[#F8F7F9] px-4 py-3 text-xs transition hover:bg-[#F3F0F6]">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${received ? "bg-[#E7F7F0] text-[#17734D]" : "bg-[#EEE9FF] text-[#603ADB]"}`}>
+          {received ? <ArrowDownLeft className="h-4 w-4" /> : <ArrowUpRight className="h-4 w-4" />}
+        </span>
+        <div className="min-w-0">
+          <p className="truncate font-semibold text-[#302A3B]">{item.label}</p>
+          <p className="mt-0.5 truncate text-[10px] text-[#91899D]">{item.recipient ?? item.network ?? "Arc Testnet"}</p>
         </div>
       </div>
-      <ul className="flex flex-1 flex-col gap-2 overflow-y-auto">
-        {items.length === 0 && !loading && (
-          <li className="rounded-2xl border border-black/10 bg-white px-3 py-6 text-center text-xs text-black/45">
-            {!identityConnected
-              ? "Sign in with email or connect a wallet to see activity."
-              : !hasApiSession
-                ? "Your Coretta session has expired. Sign in again to see activity."
-                : loadError ?? "No transactions yet. Confirm a send or swap with Damian."}
-          </li>
-        )}
-        {loading && items.length === 0 && (
-          <li className="rounded-2xl border border-black/10 bg-white px-3 py-6 text-center text-xs text-black/45">
-            Loading activity…
-          </li>
-        )}
-        {items.map((item) => {
-          const open = expandedId === item.id;
-          const explorer =
-            item.explorerUrl ??
-            (item.txHash ? `${ARC_EXPLORER}/tx/${item.txHash}` : undefined);
-          return (
-            <li
-              key={item.id}
-              className="rounded-2xl border border-black/10 bg-white px-3 py-2.5"
-            >
-              <div className="flex items-start gap-2">
-                {item.status === "complete" ? (
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-black" />
-                ) : item.status === "failed" ? (
-                  <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-500" />
-                ) : (
-                  <Clock className="mt-0.5 h-4 w-4 shrink-0 text-black/55" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium text-black">{item.label}</p>
-                  {item.amount && item.asset && (
-                    <p className="text-[10px] text-black/55">
-                      {item.amount} {item.asset}
-                      {item.recipient
-                        ? ` → ${item.recipient.slice(0, 12)}${item.recipient.length > 12 ? "…" : ""}`
-                        : ""}
-                    </p>
-                  )}
-                  <p className="mt-0.5 text-[10px] text-black/40">
-                    {item.time}
-                    {item.timestamp
-                      ? ` · ${formatAbsoluteTime(item.timestamp)}`
-                      : ""}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setExpandedId(open ? null : item.id)}
-                    className="mt-1.5 inline-flex items-center gap-0.5 text-[10px] font-semibold text-black underline-offset-2 hover:underline"
-                  >
-                    {open ? (
-                      <>
-                        Hide details <ChevronUp className="h-3 w-3" />
-                      </>
-                    ) : (
-                      <>
-                        View details <ChevronDown className="h-3 w-3" />
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {open && (
-                <div className="mt-2 space-y-1.5 rounded-xl bg-[#F5F5F5] px-2.5 py-2">
-                  <DetailRow label="Status" value={item.status} />
-                  <DetailRow label="Label" value={item.label} />
-                  <DetailRow label="State" value={item.state} />
-                  <DetailRow
-                    label="Amount"
-                    value={
-                      item.amount && item.asset
-                        ? `${item.amount} ${item.asset}`
-                        : item.amount
-                    }
-                  />
-                  <DetailRow label="Recipient" value={item.recipient} mono />
-                  <DetailRow
-                    label="Network"
-                    value={item.network ?? "Arc Testnet"}
-                  />
-                  <DetailRow
-                    label="Timestamp"
-                    value={formatAbsoluteTime(item.timestamp)}
-                  />
-                  <DetailRow
-                    label="Relative"
-                    value={formatRelativeTime(item.timestamp)}
-                  />
-                  <DetailRow
-                    label="Transaction hash"
-                    value={item.txHash}
-                    mono
-                    href={explorer}
-                  />
-                  <DetailRow
-                    label="Explorer"
-                    value={explorer ? "Open on Arcscan" : undefined}
-                    href={explorer}
-                  />
-                  <DetailRow label="Failure reason" value={item.failureReason} />
-                  <DetailRow label="Activity ID" value={item.id} mono />
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      <p className="mt-4 text-[10px] text-black/40">
-        Smart-wallet sends and swaps are saved to your Coretta account. Expand
-        a row for full details.
-      </p>
-    </aside>
+      <span className="text-[10px] text-[#81798C]">{formatAbsoluteTime(item.timestamp)}</span>
+      <span className={`inline-flex w-fit items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold ${statusClass}`}>
+        <StatusIcon className="h-3 w-3" /> {item.status}
+      </span>
+      <span className="truncate text-right font-semibold text-[#302A3B]">{item.amount ?? "0"} {item.asset ?? ""}</span>
+      {item.explorerUrl ? (
+        <a href={item.explorerUrl} target="_blank" rel="noreferrer" className="text-[#756D80] hover:text-[#5C35D6]" aria-label="Open transaction explorer">
+          <ExternalLink className="h-4 w-4" />
+        </a>
+      ) : <span />}
+    </div>
   );
 }

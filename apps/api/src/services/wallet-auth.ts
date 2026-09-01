@@ -1,6 +1,6 @@
 import { verifyMessage, type Hex } from "viem";
 import { ARC_TESTNET_CHAIN_ID, normalizeWalletAddress } from "@coretta/shared";
-import { loginWithIdentity } from "./auth.js";
+import { invalidateSessionsForUser, loginWithIdentity } from "./auth.js";
 import { trackUsageEvent } from "./limits.js";
 import { createAuditEvent } from "./audit.js";
 import { activateSmartWallet } from "./wallet-binding.js";
@@ -137,6 +137,7 @@ export async function linkWalletIdentity(
   }
 
   const binding = await activateSmartWallet(userId, expected);
+  invalidateSessionsForUser(userId);
   await createAuditEvent({
     actorId: userId,
     action: "EXTERNAL_WALLET_LINKED",

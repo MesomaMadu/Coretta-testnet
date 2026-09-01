@@ -1,5 +1,6 @@
 import { prisma } from "@coretta/db";
 import {
+  CCTP_RECOVERY_ATTEMPT_LIMIT,
   normalizeWalletAddress,
   type UserTier,
   type TierLimits,
@@ -120,6 +121,7 @@ function emptyMetrics(partial: {
     walletCreationCount: 0,
     signatureRequestCount: 0,
     connectionCount: 0,
+    networkRecoveryAttemptLimit: CCTP_RECOVERY_ATTEMPT_LIMIT,
     resetInSeconds: 86400,
     lastResetAt: now,
     updatedAt: now,
@@ -241,6 +243,7 @@ function toMetricsFromWallet(
     walletCreationCount: usage.walletCreationCount,
     signatureRequestCount: usage.signatureRequestCount,
     connectionCount: usage.connectionCount,
+    networkRecoveryAttemptLimit: CCTP_RECOVERY_ATTEMPT_LIMIT,
     resetInSeconds,
     lastResetAt: usage.lastResetAt.toISOString(),
     updatedAt: usage.updatedAt.toISOString(),
@@ -308,6 +311,7 @@ export async function getUserUsageMetrics(userId: string): Promise<UserUsageMetr
     walletCreationCount: usage.walletCreationCount,
     signatureRequestCount: 0,
     connectionCount: 0,
+    networkRecoveryAttemptLimit: CCTP_RECOVERY_ATTEMPT_LIMIT,
     resetInSeconds,
     lastResetAt: usage.lastResetAt.toISOString(),
     updatedAt: usage.updatedAt.toISOString(),
@@ -365,6 +369,55 @@ export async function trackUsageEvent(params: {
   if (params.userId && params.key !== "signatureRequestCount" && params.key !== "connectionCount") {
     await incrementUsage(params.userId, params.key, amount);
   }
+}
+
+export async function consumeSwapRequestQuota(
+  userId: string,
+  walletAddress?: string | null,
+) {
+  await maybeResetUserUsage(userId);
+  const claimed = await prisma.usageRecord.updateMany({
+    where: { userId, swapRequestCount: { lt: 50 } },
+    data: { swapRequestCount: { increment: 1 } },
+  });
+  if (claimed.count !== 1) return false;
+  if (walletAddress) {
+    await trackUsageEvent({
+      walletAddress,
+      userId,
+      key: "swapRequestCount",
+    });
+  }
+  return true;
+}
+
+export async function consumeAiRequestQuota(
+  userId: string,
+  walletAddress?: string | null,
+) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { identities: true, wallets: true },
+  });
+  if (!user) return false;
+  const limit = getTierLimits(determineUserTier(user)).aiRequestsDaily;
+
+  if (walletAddress) {
+    const normalized = normalizeWalletAddress(walletAddress);
+    await maybeResetWalletUsage(normalized, userId);
+    const claimed = await prisma.walletUsageRecord.updateMany({
+      where: { walletAddress: normalized, aiRequestCount: { lt: limit } },
+      data: { aiRequestCount: { increment: 1 } },
+    });
+    return claimed.count === 1;
+  }
+
+  await maybeResetUserUsage(userId);
+  const claimed = await prisma.usageRecord.updateMany({
+    where: { userId, aiRequestCount: { lt: limit } },
+    data: { aiRequestCount: { increment: 1 } },
+  });
+  return claimed.count === 1;
 }
 
 export function anonymousUsageMetrics(): UserUsageMetrics {

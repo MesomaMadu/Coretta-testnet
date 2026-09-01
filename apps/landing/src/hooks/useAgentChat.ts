@@ -3,14 +3,83 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount } from "wagmi";
 import { parseUserIntent } from "@/lib/agent/intent-parser";
+import {
+  isPendingBridgeRecipientAnswer,
+  isTransactionRetryRequest,
+} from "@/lib/agent/follow-up";
+import { TRANSACTION_DELAY_NOTICE_MS } from "@/lib/agent/execution-delay";
+import { allocateEqualAmounts, assessBatchRisk } from "@/lib/agent/multi-send";
+import { parseDamianHistoryQuery } from "@/lib/agent/history-query";
+import {
+  answerDamianProductQuestion,
+  formatDamianRouteAnswer,
+  isDamianRouteQuestion,
+  type DamianBridgeDestination,
+} from "@/lib/agent/capabilities";
 import { buildLockedPreview, verifyPreviewIntegrity } from "@/lib/agent/preview-lock";
-import type { AgentMessage, AgentPhase, TransactionPreview } from "@/lib/agent/types";
+import {
+  composeDamianResponse,
+  inferDamianResponseLength,
+  redactDamianContentForPersistence,
+  type DamianResponseLength,
+} from "@/lib/agent/responses";
+import type {
+  AgentMessage,
+  AgentPhase,
+  ConversationSummary,
+  TransactionPreview,
+  TransactionDraft,
+} from "@/lib/agent/types";
 import { AGENT_NAME } from "@/lib/brand";
 import { apiFetch, getApiToken } from "@/lib/api";
-import type { TransactionRecord } from "@/lib/transaction-store";
+import {
+  reconcileTransactionApproval,
+  upsertTransaction,
+  type ApprovalTransferSnapshot,
+  type TransactionRecord,
+} from "@/lib/transaction-store";
+import { humanizeTxFailure } from "@/lib/tx-errors";
+import { detectPromptInjection } from "@/lib/agent/security";
+import {
+  BOUND_MAIN_WALLET,
+  BOUND_SMART_WALLET,
+  displayAccountWalletRecipient,
+  resolveAccountWalletRecipient,
+  type AccountWalletBindings,
+  type AccountWalletPlaceholder,
+} from "@/lib/agent/wallet-recipient";
 
 const ONBOARDING_GREETING =
   "Welcome to Coretta.\nConnect your wallet or sign in to begin.";
+
+function decimalToMicro(value: string): bigint {
+  const [whole, fraction = ""] = value.trim().split(".");
+  return BigInt(`${whole || "0"}${fraction.padEnd(6, "0").slice(0, 6)}`);
+}
+
+function summarizeBatchAllocation(
+  batch: TransactionPreview["batch"],
+  asset: string,
+  allocation?: TransactionPreview["allocation"],
+): string {
+  if (!batch?.length) return "";
+  const amounts = batch.map((recipient) => recipient.amount);
+  const unique = [...new Set(amounts)];
+  if (allocation === "equal-output") {
+    const range = unique.length === 1 ? unique[0] : `${unique[unique.length - 1]} to ${unique[0]}`;
+    return `Allocation: even split across ${batch.length} wallets, ${range} ${asset} each`;
+  }
+  if (allocation === "random") {
+    return `Allocation: varied locked amounts across ${batch.length} wallets`;
+  }
+  if (unique.length === 1) {
+    return `Allocation: ${unique[0]} ${asset} each across ${batch.length} wallets`;
+  }
+  const micros = amounts.map(decimalToMicro);
+  const minimum = amounts[micros.indexOf(micros.reduce((a, b) => (a < b ? a : b)))];
+  const maximum = amounts[micros.indexOf(micros.reduce((a, b) => (a > b ? a : b)))];
+  return `Allocation: custom amounts from ${minimum} to ${maximum} ${asset} per wallet`;
+}
 
 type PendingRecipientSave = {
   stage: "offer" | "label" | "confirm";
@@ -25,12 +94,15 @@ function msg(role: AgentMessage["role"], content: string): AgentMessage {
     role,
     content,
     timestamp: Date.now(),
+    delivery: "sent",
   };
 }
 
 export function useAgentChat(greeting?: string) {
   const { address } = useAccount();
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [memoryEnabled, setMemoryEnabled] = useState<boolean>(false);
   const [transactionHistoryEnabled, setTransactionHistoryEnabled] = useState(false);
   const [savedRecipientsEnabled, setSavedRecipientsEnabled] = useState(false);
@@ -44,27 +116,74 @@ export function useAgentChat(greeting?: string) {
   const [phase, setPhase] = useState<AgentPhase>("idle");
   const [preview, setPreview] = useState<TransactionPreview | null>(null);
   const [txCards, setTxCards] = useState<TransactionRecord[]>([]);
+  const txCardsRef = useRef<TransactionRecord[]>([]);
+  const [executionsInFlight, setExecutionsInFlight] = useState(0);
+  const [sessionVersion, setSessionVersion] = useState(0);
   const [pendingRecipientSave, setPendingRecipientSave] =
     useState<PendingRecipientSave | null>(null);
   const lockedRef = useRef<TransactionPreview | null>(null);
+  const pendingDraftRef = useRef<{ draft: TransactionDraft; token: string | null } | null>(null);
+  const lastFailedDraftRef = useRef<{ draft: TransactionDraft; token: string | null } | null>(null);
+  const lastTerminalWasFailureRef = useRef(false);
+  const intentEpochRef = useRef(0);
+  const conversationIdRef = useRef<string | null>(null);
+  const conversationCreatePromiseRef = useRef<Promise<string> | null>(null);
+  const executionDelayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const responseLengthRef = useRef<DamianResponseLength>("standard");
+  const executionResponseLengthRef = useRef<DamianResponseLength>("standard");
+  const initializedSessionTokenRef = useRef<string | null>(null);
+  const observedIncomingRef = useRef(new Set<string>());
+  const incomingRefreshRef = useRef(false);
+  const approvalDecisionsRef = useRef(new Set<string>());
 
   const resetSession = useCallback(() => {
+    pendingDraftRef.current = null;
+    lastFailedDraftRef.current = null;
+    lastTerminalWasFailureRef.current = false;
+    intentEpochRef.current += 1;
     setMessages([msg("assistant", ONBOARDING_GREETING)]);
     setPhase("idle");
     setPreview(null);
     lockedRef.current = null;
     setTxCards([]);
+    txCardsRef.current = [];
     setPendingRecipientSave(null);
     greetedRef.current = false;
     setConversationId(null);
+    conversationIdRef.current = null;
+    conversationCreatePromiseRef.current = null;
     setMemoryEnabled(false);
     setTransactionHistoryEnabled(false);
     setSavedRecipientsEnabled(false);
+    setConversations([]);
+    setHistoryOpen(false);
+    setExecutionsInFlight(0);
+    responseLengthRef.current = "standard";
+    executionResponseLengthRef.current = "standard";
+    initializedSessionTokenRef.current = null;
+    observedIncomingRef.current.clear();
+    incomingRefreshRef.current = false;
+    approvalDecisionsRef.current.clear();
+    if (executionDelayTimerRef.current) {
+      clearTimeout(executionDelayTimerRef.current);
+      executionDelayTimerRef.current = null;
+    }
   }, []);
+
+  useEffect(
+    () => () => {
+      if (executionDelayTimerRef.current) clearTimeout(executionDelayTimerRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     const onDisconnect = () => resetSession();
     const onRestore = (e: Event) => {
+      pendingDraftRef.current = null;
+      lastFailedDraftRef.current = null;
+      lastTerminalWasFailureRef.current = false;
+      intentEpochRef.current += 1;
       const detail = (e as CustomEvent<{ message: string }>).detail;
       if (!detail?.message) return;
       setMessages([msg("assistant", detail.message)]);
@@ -73,6 +192,7 @@ export function useAgentChat(greeting?: string) {
       setPreview(null);
       lockedRef.current = null;
       setTxCards([]);
+      txCardsRef.current = [];
     };
     window.addEventListener("coretta-wallet-disconnect", onDisconnect);
     window.addEventListener("coretta-session-restored", onRestore);
@@ -80,6 +200,18 @@ export function useAgentChat(greeting?: string) {
       window.removeEventListener("coretta-wallet-disconnect", onDisconnect);
       window.removeEventListener("coretta-session-restored", onRestore);
     };
+  }, [resetSession]);
+
+  useEffect(() => {
+    const syncSession = () => {
+      if (!getApiToken()) {
+        resetSession();
+        return;
+      }
+      setSessionVersion((version) => version + 1);
+    };
+    window.addEventListener("coretta-api-session-updated", syncSession);
+    return () => window.removeEventListener("coretta-api-session-updated", syncSession);
   }, [resetSession]);
 
   const greetedRef = useRef(false);
@@ -110,6 +242,114 @@ export function useAgentChat(greeting?: string) {
     return boot;
   }, []);
 
+  const refreshConversations = useCallback(async () => {
+    if (!getApiToken()) {
+      setConversations([]);
+      return [] as ConversationSummary[];
+    }
+    const response = await apiFetch<{ conversations: ConversationSummary[] }>(
+      "/v1/ai/conversations",
+    );
+    setConversations(response.conversations);
+    return response.conversations;
+  }, []);
+
+  const ensureConversation = useCallback(async () => {
+    if (conversationIdRef.current) return conversationIdRef.current;
+    if (!getApiToken()) return null;
+    if (!conversationCreatePromiseRef.current) {
+      conversationCreatePromiseRef.current = apiFetch<{ conversationId: string }>(
+        "/v1/ai/conversations",
+        { method: "POST", body: JSON.stringify({}) },
+      )
+        .then((result) => {
+          conversationIdRef.current = result.conversationId;
+          setConversationId(result.conversationId);
+          return result.conversationId;
+        })
+        .finally(() => {
+          conversationCreatePromiseRef.current = null;
+        });
+    }
+    return conversationCreatePromiseRef.current;
+  }, []);
+
+  const loadConversation = useCallback(async (id: string) => {
+    if (executionsInFlight > 0) return;
+    pendingDraftRef.current = null;
+    intentEpochRef.current += 1;
+    const response = await apiFetch<{
+      conversation: { id: string; title: string; status: "ACTIVE" | "ARCHIVED" };
+      messages: Array<{
+        id: string;
+        role: AgentMessage["role"];
+        content: string;
+        createdAt: string;
+      }>;
+    }>(`/v1/ai/conversations/${id}/messages`);
+    if (response.conversation.status === "ARCHIVED") {
+      await apiFetch(`/v1/ai/conversations/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "ACTIVE" }),
+      });
+      setConversations((current) =>
+        current.map((item) =>
+          item.id === id ? { ...item, status: "ACTIVE" as const } : item,
+        ),
+      );
+    }
+    setConversationId(response.conversation.id);
+    conversationIdRef.current = response.conversation.id;
+    setMessages(
+      response.messages.length
+        ? response.messages.map((message) => ({
+            id: `history_${message.id}`,
+            serverId: message.id,
+            role: message.role,
+            content: message.content,
+            timestamp: new Date(message.createdAt).getTime(),
+            delivery: "sent",
+          }))
+        : [msg("assistant", greeting ?? `I'm ${AGENT_NAME}. Who would you like to pay?`)],
+    );
+    setPreview(null);
+    lockedRef.current = null;
+    setPhase("idle");
+    setHistoryOpen(false);
+  }, [greeting, executionsInFlight]);
+
+  const startNewConversation = useCallback(async () => {
+    if (executionsInFlight > 0) return;
+    pendingDraftRef.current = null;
+    lastFailedDraftRef.current = null;
+    lastTerminalWasFailureRef.current = false;
+    intentEpochRef.current += 1;
+    setConversationId(null);
+    conversationIdRef.current = null;
+    conversationCreatePromiseRef.current = null;
+    setMessages([msg("assistant", greeting ?? `I'm ${AGENT_NAME}. Who would you like to pay?`)]);
+    setPreview(null);
+    lockedRef.current = null;
+    setTxCards([]);
+    txCardsRef.current = [];
+    setPhase("idle");
+    setHistoryOpen(false);
+    await refreshConversations();
+  }, [greeting, refreshConversations, executionsInFlight]);
+
+  const archiveConversation = useCallback(async (id: string) => {
+    await apiFetch(`/v1/ai/conversations/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "ARCHIVED" }),
+    });
+    const next = await refreshConversations();
+    if (conversationId === id) {
+      const replacement = next.find((item) => item.status === "ACTIVE" && item.id !== id);
+      if (replacement) await loadConversation(replacement.id);
+      else await startNewConversation();
+    }
+  }, [conversationId, loadConversation, refreshConversations, startNewConversation]);
+
   useEffect(() => {
     const token = getApiToken();
     if (!token) {
@@ -118,21 +358,38 @@ export function useAgentChat(greeting?: string) {
       setSavedRecipientsEnabled(false);
       return;
     }
+    if (initializedSessionTokenRef.current === token) return;
+    initializedSessionTokenRef.current = token;
     (async () => {
       try {
-        await refreshMemoryPreferences();
-        const convo = await apiFetch<{ conversationId: string }>(
-          "/v1/ai/conversations",
-          { method: "POST", body: JSON.stringify({ title: "Coretta session" }) },
-        );
-        setConversationId(convo.conversationId);
+        const session = await apiFetch<{
+          memoryEnabled: boolean;
+          transactionHistoryEnabled: boolean;
+          savedRecipientsEnabled: boolean;
+          conversations: ConversationSummary[];
+        }>("/v1/ai/session");
+        if (getApiToken() !== token) return;
+        setMemoryEnabled(session.memoryEnabled);
+        setTransactionHistoryEnabled(session.transactionHistoryEnabled);
+        setSavedRecipientsEnabled(session.savedRecipientsEnabled);
+        setConversations(session.conversations);
+        setConversationId(null);
+        conversationIdRef.current = null;
+        conversationCreatePromiseRef.current = null;
+        setMessages([msg("assistant", greeting ?? `I'm ${AGENT_NAME}. Who would you like to pay?`)]);
+        setPreview(null);
+        lockedRef.current = null;
+        setTxCards([]);
+        txCardsRef.current = [];
+        setPhase("idle");
       } catch {
+        initializedSessionTokenRef.current = null;
         setMemoryEnabled(false);
         setTransactionHistoryEnabled(false);
         setSavedRecipientsEnabled(false);
       }
     })();
-  }, [refreshMemoryPreferences]);
+  }, [greeting, sessionVersion]);
 
   useEffect(() => {
     const refresh = () => {
@@ -150,13 +407,14 @@ export function useAgentChat(greeting?: string) {
       const token = getApiToken();
       if (!token) return undefined;
       try {
+        const persistedContent = redactDamianContentForPersistence(content);
         const res = await apiFetch<{ messageId: string }>("/v1/ai/messages", {
           method: "POST",
           body: JSON.stringify({
-            conversationId,
+          conversationId: conversationIdRef.current ?? (await ensureConversation()),
             role,
-            content,
-            contentSummary: content.slice(0, 280),
+            content: persistedContent,
+            contentSummary: persistedContent.slice(0, 280),
             clientMessageId: clientId,
           }),
         });
@@ -165,23 +423,182 @@ export function useAgentChat(greeting?: string) {
         return undefined;
       }
     },
-    [conversationId],
+    [ensureConversation],
   );
+
+  const refreshIncoming = useCallback(async () => {
+    if (!getApiToken() || document.visibilityState !== "visible" || incomingRefreshRef.current) return;
+    incomingRefreshRef.current = true;
+    try {
+      const [approvalResult, notificationResult] = await Promise.all([
+        apiFetch<{ approvals: Array<ApprovalTransferSnapshot & { amount: string; asset: string; counterparty: string; expiresAt: string }> }>("/v1/approvals"),
+        apiFetch<{ notifications: Array<{ id: string; type: string; title: string; body: string; read: boolean; transferId?: string; approvalId?: string }> }>("/v1/notifications"),
+      ]);
+      const incomingRequests = approvalResult.approvals.filter((approval) => approval.direction === "incoming" && approval.status === "PENDING");
+      const received = notificationResult.notifications.filter(
+        (notification) => notification.type === "TRANSFER_RECEIVED" && !notification.read,
+      );
+      const outgoingApprovals = approvalResult.approvals.filter(
+        (approval) => approval.direction === "outgoing",
+      );
+      if (outgoingApprovals.length && txCardsRef.current.length) {
+        const currentCards = txCardsRef.current;
+        const nextCards = currentCards.map((card) =>
+          outgoingApprovals.reduce(
+            (current, approval) => reconcileTransactionApproval(current, approval),
+            card,
+          ),
+        );
+        if (nextCards.some((card, index) => card !== currentCards[index])) {
+          txCardsRef.current = nextCards;
+          setTxCards(nextCards);
+          nextCards.forEach((card, index) => {
+            if (card !== currentCards[index]) upsertTransaction(card);
+          });
+        }
+      }
+      const newMessages: AgentMessage[] = [];
+      for (const approval of incomingRequests) {
+        const key = `approval:${approval.id}`;
+        if (observedIncomingRef.current.has(key)) continue;
+        observedIncomingRef.current.add(key);
+        newMessages.push({
+          ...msg("assistant", `Incoming payment request from ${approval.counterparty}: ${approval.amount} ${approval.asset}. It expires ${new Date(approval.expiresAt).toLocaleString()}. Nothing is submitted on-chain unless you accept.`),
+          kind: "approval_offer",
+          approvalId: approval.id,
+          approvalStatus: "pending",
+        });
+      }
+      for (const notification of received) {
+        const key = `notification:${notification.id}`;
+        if (observedIncomingRef.current.has(key)) continue;
+        observedIncomingRef.current.add(key);
+        newMessages.push(msg("assistant", `${notification.title}: ${notification.body}`));
+      }
+      if (received.length) {
+        void Promise.allSettled(
+          received.map((notification) =>
+            apiFetch(`/v1/notifications/${encodeURIComponent(notification.id)}/read`, {
+              method: "PATCH",
+            }),
+          ),
+        );
+      }
+      const senderStatusTypes = new Set([
+        "TRANSFER_APPROVAL_ACCEPTED",
+        "TRANSFER_SETTLED",
+        "TRANSFER_APPROVAL_REJECTED",
+        "TRANSFER_APPROVAL_EXPIRED",
+        "TRANSFER_POLICY_DENIED",
+        "TRANSFER_FAILED",
+      ]);
+      const terminalTransferIds = new Set(
+        notificationResult.notifications
+          .filter((notification) =>
+            [
+              "TRANSFER_SETTLED",
+              "TRANSFER_APPROVAL_REJECTED",
+              "TRANSFER_APPROVAL_EXPIRED",
+              "TRANSFER_POLICY_DENIED",
+              "TRANSFER_FAILED",
+            ].includes(notification.type),
+          )
+          .map((notification) => notification.transferId)
+          .filter((transferId): transferId is string => Boolean(transferId)),
+      );
+      for (const notification of notificationResult.notifications) {
+        if (!senderStatusTypes.has(notification.type)) continue;
+        if (
+          notification.type === "TRANSFER_APPROVAL_ACCEPTED" &&
+          notification.transferId &&
+          terminalTransferIds.has(notification.transferId)
+        ) {
+          continue;
+        }
+        const matchesCurrentTransfer = txCardsRef.current.some(
+          (card) =>
+            (notification.transferId && card.transferId === notification.transferId) ||
+            (notification.approvalId && card.approvalId === notification.approvalId),
+        );
+        if (!matchesCurrentTransfer) continue;
+        const key = `sender-notification:${notification.id}`;
+        if (observedIncomingRef.current.has(key)) continue;
+        observedIncomingRef.current.add(key);
+        newMessages.push(msg("assistant", `${notification.title}. ${notification.body}`));
+      }
+      if (newMessages.length) setMessages((current) => [...current, ...newMessages]);
+    } catch {
+      // The approvals panel remains the fallback when background refresh is unavailable.
+    } finally {
+      incomingRefreshRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshIncoming();
+    const timer = window.setInterval(() => void refreshIncoming(), 15_000);
+    const onSession = () => void refreshIncoming();
+    window.addEventListener("coretta-api-session-updated", onSession);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("coretta-api-session-updated", onSession);
+    };
+  }, [refreshIncoming, sessionVersion]);
+
+  const decideIncomingApproval = useCallback(async (approvalId: string, decision: "accept" | "reject") => {
+    if (decision === "reject" && !window.confirm("Reject this payment request? It will not be submitted on-chain.")) return;
+    if (approvalDecisionsRef.current.has(approvalId)) return;
+    approvalDecisionsRef.current.add(approvalId);
+    try {
+      await apiFetch(`/v1/approvals/${approvalId}/${decision}`, { method: "POST" });
+      setMessages((current) => current.map((message) =>
+        message.approvalId === approvalId
+          ? { ...message, approvalStatus: decision === "accept" ? "accepted" : "rejected", content: `${message.content}\n\n${decision === "accept" ? "Accepted. Coretta is now submitting the approved payment." : "Rejected. Nothing was submitted on-chain."}` }
+          : message,
+      ));
+      window.dispatchEvent(new Event("coretta-approvals-updated"));
+    } catch (decisionError) {
+      approvalDecisionsRef.current.delete(approvalId);
+      const failure = msg("assistant", decisionError instanceof Error ? `I couldn't ${decision} that payment request: ${decisionError.message}` : `I couldn't ${decision} that payment request.`);
+      setMessages((current) => [...current, failure]);
+    }
+  }, []);
 
   const submitUserMessage = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    const requestEpoch = ++intentEpochRef.current;
+    const sessionToken = getApiToken();
+    const requestIsCurrent = () => intentEpochRef.current === requestEpoch && getApiToken() === sessionToken;
+    const responseLength = inferDamianResponseLength(trimmed);
+    responseLengthRef.current = responseLength;
 
-    const userLocal = msg("user", trimmed);
+    const userLocal = { ...msg("user", trimmed), delivery: "sending" as const };
     setMessages((m) => [...m, userLocal]);
     void persistMessage("user", trimmed, userLocal.id).then((serverId) => {
-      if (!serverId) return;
-      setMessages((m) => m.map((x) => (x.id === userLocal.id ? { ...x, serverId } : x)));
+      setMessages((m) =>
+        m.map((x) =>
+          x.id === userLocal.id
+            ? { ...x, serverId, delivery: serverId ? "sent" : "failed" }
+            : x,
+        ),
+      );
     });
     setPhase("thinking");
     setPreview(null);
+    if (executionsInFlight === 0) lockedRef.current = null;
+
+    const blockedReply = detectPromptInjection(trimmed);
+    if (blockedReply) {
+      const response = msg("assistant", blockedReply);
+      setMessages((messages) => [...messages, response]);
+      void persistMessage("assistant", blockedReply, response.id);
+      setPhase("idle");
+      return;
+    }
 
     await new Promise((r) => setTimeout(r, 400));
+    if (!requestIsCurrent()) return;
 
     const affirmative = /^(?:yes|yeah|yep|sure|okay|ok|confirm|save it)[.!]?$/i.test(trimmed);
     const negative = /^(?:no|nope|cancel|never mind|don't save it)[.!]?$/i.test(trimmed);
@@ -362,6 +779,29 @@ export function useAgentChat(greeting?: string) {
       }
     }
 
+    let productAnswer: string | null = null;
+    if (isDamianRouteQuestion(trimmed)) {
+      try {
+        const registry = await apiFetch<{
+          sourceChain: string;
+          token: "USDC";
+          destinations: DamianBridgeDestination[];
+        }>("/v1/bridge/chains");
+        productAnswer = formatDamianRouteAnswer(registry.destinations);
+      } catch {
+        productAnswer = answerDamianProductQuestion(trimmed);
+      }
+    } else {
+      productAnswer = answerDamianProductQuestion(trimmed);
+    }
+    if (productAnswer) {
+      const answer = msg("assistant", productAnswer);
+      setMessages((current) => [...current, answer]);
+      void persistMessage("assistant", productAnswer, answer.id);
+      setPhase("idle");
+      return;
+    }
+
     const asksForWalletAddress =
       /\b(smart\s*wallet(\s*address)?|my\s+(?:wallet\s*)?address|my\s+smart\s+wallet|sca\s*address|account\s*address)\b/i.test(
         trimmed,
@@ -373,13 +813,23 @@ export function useAgentChat(greeting?: string) {
       asksForWalletAddress ||
       /\b(balance|how much|wallet summary|show my wallet|what'?s my)\b/i.test(trimmed);
 
-    if (asksForBalanceOrWallet) {
+    const activePendingDraft =
+      pendingDraftRef.current?.token === sessionToken
+        ? pendingDraftRef.current.draft
+        : null;
+    const answersPendingBridgeRecipient = isPendingBridgeRecipientAnswer(
+      trimmed,
+      activePendingDraft,
+    );
+
+    if (asksForBalanceOrWallet && !answersPendingBridgeRecipient) {
       try {
         const token = getApiToken();
         if (token) {
           const me = await apiFetch<{
             walletAddress?: string;
             balanceUsdc: string;
+            balanceEurc: string;
             identities: Array<{ type: string; value: string }>;
           }>("/v1/me");
           const smartAddr = me.walletAddress?.trim() || null;
@@ -409,6 +859,7 @@ export function useAgentChat(greeting?: string) {
             "Wallet Summary",
             "",
             `USDC:\n${me.balanceUsdc}`,
+            `EURC:\n${me.balanceEurc}`,
             "",
             `Smart Wallet (full address):\n${smartAddr ?? "Not provisioned"}`,
             "",
@@ -575,7 +1026,7 @@ export function useAgentChat(greeting?: string) {
     if (/\b(what network|network used|which network)\b/i.test(trimmed)) {
       const a = msg(
         "assistant",
-        "Network Settlement Summary\n\nPrimary Network: Arc Testnet (Chain ID: 5042002)\nSettlement Layer: Arc Native USDC\nFinality: Sub-second deterministic (<400ms)\nFees: Circle Paymaster v0.7 can charge compatible smart accounts in USDC"
+        "Network Settlement Summary\n\nPrimary Network: Arc Testnet (Chain ID: 5042002)\nSettlement Layer: Arc Native USDC\nFinality: Sub-second finality is a core Arc property\nFees: Circle Paymaster v0.7 can charge compatible smart accounts in USDC"
       );
       setMessages((m) => [...m, a]);
       void persistMessage("assistant", a.content, a.id);
@@ -610,8 +1061,10 @@ export function useAgentChat(greeting?: string) {
 
     if (asksHistoryQuestion) {
       if (!transactionHistoryEnabled) {
-        const content =
-          "I don't have permission to use your transaction history for that. Enable Use transaction history in Settings, or paste the address.";
+        const content = composeDamianResponse(
+          { event: "history_permission_required" },
+          { length: responseLength },
+        );
         const a = msg("assistant", content);
         setMessages((m) => [...m, a]);
         void persistMessage("assistant", content, a.id);
@@ -621,11 +1074,17 @@ export function useAgentChat(greeting?: string) {
       try {
         const response = await apiFetch<{
           transfer: null | {
+            id: string;
+            direction: "sent" | "received";
             amount: string;
             asset: string;
             state: string;
             destinationAddress: string | null;
+            counterpartyAddress: string | null;
+            txHash: string | null;
+            failureReason: string | null;
             createdAt: string;
+            settledAt: string | null;
           };
         }>(
           `/v1/ai/transactions/last-settled?timezoneOffsetMinutes=${new Date().getTimezoneOffset()}${
@@ -634,7 +1093,10 @@ export function useAgentChat(greeting?: string) {
         );
         const transfer = response.transfer;
         if (!transfer?.destinationAddress) {
-          const content = "I couldn't find a settled Coretta transfer with a destination address.";
+          const content = composeDamianResponse(
+            { event: "history_empty" },
+            { length: responseLength },
+          );
           const a = msg("assistant", content);
           setMessages((m) => [...m, a]);
           void persistMessage("assistant", content, a.id);
@@ -654,11 +1116,10 @@ export function useAgentChat(greeting?: string) {
           }
           intentInput = `Send ${amount} ${asset ?? transfer.asset} to ${transfer.destinationAddress}`;
         } else {
-          const when = new Intl.DateTimeFormat(undefined, {
-            dateStyle: "medium",
-            timeStyle: "short",
-          }).format(new Date(transfer.createdAt));
-          const content = `Your last settled transfer was ${transfer.amount} ${transfer.asset} to ${transfer.destinationAddress} on ${when}.`;
+          const content = composeDamianResponse(
+            { event: "history_list", items: [transfer] },
+            { length: responseLength, seed: transfer.id },
+          );
           const a = msg("assistant", content);
           setMessages((m) => [...m, a]);
           void persistMessage("assistant", content, a.id);
@@ -666,7 +1127,10 @@ export function useAgentChat(greeting?: string) {
           return;
         }
       } catch {
-        const content = "I couldn't retrieve your transaction history right now.";
+        const content = composeDamianResponse(
+          { event: "history_unavailable" },
+          { length: responseLength },
+        );
         const a = msg("assistant", content);
         setMessages((m) => [...m, a]);
         void persistMessage("assistant", content, a.id);
@@ -680,8 +1144,10 @@ export function useAgentChat(greeting?: string) {
     );
     if (totalForRecipient) {
       if (!transactionHistoryEnabled) {
-        const content =
-          "I don't have permission to use your transaction history for that. Enable Use transaction history in Settings.";
+        const content = composeDamianResponse(
+          { event: "history_permission_required" },
+          { length: responseLength },
+        );
         const a = msg("assistant", content);
         setMessages((m) => [...m, a]);
         void persistMessage("assistant", content, a.id);
@@ -728,10 +1194,96 @@ export function useAgentChat(greeting?: string) {
       }
     }
 
-    const result = parseUserIntent(intentInput);
+    const historyQuery = parseDamianHistoryQuery(trimmed);
+    if (historyQuery) {
+      if (!transactionHistoryEnabled) {
+        const content = composeDamianResponse(
+          { event: "history_permission_required" },
+          { length: responseLength },
+        );
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+      try {
+        const response = await apiFetch<{
+          transfers: Array<{
+            id: string;
+            direction: "sent" | "received";
+            amount: string;
+            asset: string;
+            state: string;
+            destinationAddress: string | null;
+            counterpartyAddress: string | null;
+            txHash: string | null;
+            failureReason: string | null;
+            createdAt: string;
+            settledAt: string | null;
+          }>;
+        }>("/v1/ai/transactions/search", {
+          method: "POST",
+          body: JSON.stringify({
+            ...historyQuery,
+            timezoneOffsetMinutes: new Date().getTimezoneOffset(),
+          }),
+        });
+        const content = response.transfers.length
+          ? composeDamianResponse(
+              {
+                event: "history_list",
+                items: response.transfers.map((transfer) => ({
+                  ...transfer,
+                  failureReason: transfer.failureReason
+                    ? humanizeTxFailure(new Error(transfer.failureReason))
+                    : null,
+                })),
+              },
+              { length: responseLength, seed: trimmed },
+            )
+          : composeDamianResponse(
+              { event: "history_empty" },
+              { length: responseLength },
+            );
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      } catch {
+        const content = composeDamianResponse(
+          { event: "history_unavailable" },
+          { length: responseLength },
+        );
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+    }
+
+    const retryRequested = isTransactionRetryRequest(trimmed);
+    const explicitlyFailedRetry = /\bfailed\b/i.test(trimmed);
+    const failedDraft =
+      lastFailedDraftRef.current?.token === sessionToken &&
+      (lastTerminalWasFailureRef.current || explicitlyFailedRetry)
+        ? lastFailedDraftRef.current.draft
+        : null;
+    const previous = retryRequested
+      ? failedDraft
+      : activePendingDraft;
+    const result = parseUserIntent(intentInput, previous);
     if (!result.ok) {
+      if (result.draft) {
+        pendingDraftRef.current = {
+          draft: structuredClone(result.draft),
+          token: sessionToken,
+        };
+      }
       let content = result.message;
-      if (result.reason !== "blocked" && getApiToken()) {
+      if (result.reason !== "blocked" && !result.requiresClarification && getApiToken()) {
         try {
           const response = await apiFetch<{ available: boolean; reply: string | null }>(
             "/v1/ai/respond",
@@ -752,14 +1304,50 @@ export function useAgentChat(greeting?: string) {
       return;
     }
 
+    if (executionsInFlight > 0) {
+      const content = composeDamianResponse(
+        { event: "transaction_busy" },
+        { length: responseLength },
+      );
+      const a = msg("assistant", content);
+      setMessages((m) => [...m, a]);
+      void persistMessage("assistant", content, a.id);
+      setPhase("idle");
+      return;
+    }
+
     const previewBase = { ...result.preview };
+    if (!requestIsCurrent()) return;
+    pendingDraftRef.current = { draft: structuredClone(result.preview), token: sessionToken };
+    const preparingContent = composeDamianResponse(
+      {
+        event: "transaction_preparing",
+        facts: {
+          action: previewBase.action,
+          receiveAsset: previewBase.receiveAsset,
+          amount: previewBase.amount,
+          asset: previewBase.asset,
+          recipient: displayAccountWalletRecipient(previewBase.recipient),
+          network: previewBase.network,
+        },
+      },
+      { length: responseLength, seed: `${trimmed}:preparing` },
+    );
+    const preparingMessage = msg("assistant", preparingContent);
+    setMessages((messages) => [...messages, preparingMessage]);
+    void persistMessage("assistant", preparingContent, preparingMessage.id);
+
     const recipientLooksLikeAddress = /0x[a-fA-F0-9]{40}/.test(previewBase.recipient);
     const recipientLooksLikeEmail = /[\w.+-]+@[\w.-]+\.\w+/.test(previewBase.recipient);
     const recipientIsPlaceholder = previewBase.recipient.startsWith("__BOUND_");
-    const isSend = previewBase.action === "sendUSDC" || previewBase.action === "sendEURC";
+    const isSend =
+      previewBase.action === "sendUSDC" ||
+      previewBase.action === "sendEURC" ||
+      previewBase.action === "swapAndSend";
 
     if (
       isSend &&
+      !previewBase.batch?.length &&
       !recipientLooksLikeAddress &&
       !recipientLooksLikeEmail &&
       !recipientIsPlaceholder
@@ -820,89 +1408,441 @@ export function useAgentChat(greeting?: string) {
       }
     }
 
-    if (previewBase.recipient === "__BOUND_SMART_WALLET__") {
-      const token = getApiToken();
-      if (token) {
-        try {
-          const me = await apiFetch<{ walletAddress?: string }>("/v1/me");
-          if (me.walletAddress) {
-            // Keep full address so execution does not require email.
-            previewBase.recipient = me.walletAddress;
-          } else {
-            const a = msg(
-              "assistant",
-              "Your smart wallet is not provisioned yet. Connect your wallet and complete ownership verification first.",
-            );
-            setMessages((m) => [...m, a]);
-            setPhase("idle");
-            return;
-          }
-        } catch {
-          const a = msg("assistant", "Could not resolve your smart wallet. Try again shortly.");
+    if (isSend && previewBase.batch?.length) {
+      const resolvedBatch = [];
+      for (const entry of previewBase.batch) {
+        if (entry.identityType !== "name") {
+          resolvedBatch.push(entry);
+          continue;
+        }
+        if (!savedRecipientsEnabled) {
+          const content = `Saved recipients are off, so I can't resolve ${entry.name}. Paste a full address or email, or enable Saved recipients in Settings.`;
+          const a = msg("assistant", content);
           setMessages((m) => [...m, a]);
+          void persistMessage("assistant", content, a.id);
           setPhase("idle");
           return;
         }
-      } else {
-        const a = msg(
-          "assistant",
-          "Connect your wallet and verify ownership to use your smart wallet as a destination. Email is not required.",
-        );
-        setMessages((m) => [...m, a]);
-        setPhase("idle");
-        return;
+        const resolution = await apiFetch<{
+          status: "resolved" | "ambiguous" | "not_found";
+          matches: Array<{ label: string; address: string }>;
+        }>("/v1/ai/saved-recipients/resolve", {
+          method: "POST",
+          body: JSON.stringify({ label: entry.name, network: "arc-testnet" }),
+        });
+        if (resolution.status !== "resolved" || resolution.matches.length !== 1) {
+          const content = `I couldn't resolve ${entry.name} to one saved address. Use the exact full address or email before I prepare this plan.`;
+          const a = msg("assistant", content);
+          setMessages((m) => [...m, a]);
+          void persistMessage("assistant", content, a.id);
+          setPhase("idle");
+          return;
+        }
+        resolvedBatch.push({
+          ...entry,
+          name: resolution.matches[0].address,
+          displayAddress: resolution.matches[0].address,
+          identityType: "address" as const,
+        });
       }
-    } else if (previewBase.recipient === "__BOUND_MAIN_WALLET__") {
-      if (!address) {
-        const a = msg(
-          "assistant",
-          "Connect your wallet first so I can send to your bound main wallet address.",
-        );
-        setMessages((m) => [...m, a]);
-        setPhase("idle");
-        return;
-      }
-      previewBase.recipient = address;
+      previewBase.batch = resolvedBatch;
     }
 
+    const batchUsesAccountWallet = previewBase.batch?.some(
+      (entry) =>
+        entry.name === BOUND_SMART_WALLET || entry.name === BOUND_MAIN_WALLET,
+    );
+    if (batchUsesAccountWallet && previewBase.batch) {
+      if (!getApiToken()) {
+        const content =
+          "Sign in to Coretta first so I can resolve the wallets attached to your account.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+      try {
+        const bindings = await apiFetch<AccountWalletBindings>("/v1/me");
+        const resolvedBatch = [];
+        for (const entry of previewBase.batch) {
+          if (
+            entry.name !== BOUND_SMART_WALLET &&
+            entry.name !== BOUND_MAIN_WALLET
+          ) {
+            resolvedBatch.push(entry);
+            continue;
+          }
+          const resolved = resolveAccountWalletRecipient(
+            entry.name as AccountWalletPlaceholder,
+            bindings,
+          );
+          if (!resolved.ok) {
+            const content =
+              resolved.reason === "smart_wallet_missing"
+                ? "Your Coretta smart wallet is not ready yet. Complete account setup before bridging to it."
+                : "No external wallet is linked to this Coretta account. Link and verify one in Settings, or use your Coretta smart wallet instead.";
+            const a = msg("assistant", content);
+            setMessages((m) => [...m, a]);
+            void persistMessage("assistant", content, a.id);
+            setPhase("idle");
+            return;
+          }
+          resolvedBatch.push({
+            ...entry,
+            name: resolved.address,
+            displayAddress: resolved.address,
+            identityType: "address" as const,
+          });
+        }
+        previewBase.batch = resolvedBatch;
+      } catch {
+        const content =
+          "I couldn't resolve the wallets attached to your Coretta account. Try again shortly.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+    }
+
+    if (
+      previewBase.recipient === BOUND_SMART_WALLET ||
+      previewBase.recipient === BOUND_MAIN_WALLET
+    ) {
+      const token = getApiToken();
+      if (!token) {
+        const a = msg(
+          "assistant",
+          "Sign in to Coretta first so I can resolve the wallet already attached to your account.",
+        );
+        setMessages((m) => [...m, a]);
+        setPhase("idle");
+        return;
+      }
+      try {
+        const placeholder = previewBase.recipient as AccountWalletPlaceholder;
+        const bindings = await apiFetch<AccountWalletBindings>("/v1/me");
+        const resolved = resolveAccountWalletRecipient(placeholder, bindings);
+        if (!resolved.ok) {
+          const content =
+            resolved.reason === "smart_wallet_missing"
+              ? "Your Coretta smart wallet is not provisioned yet. Complete account setup before bridging to it."
+              : "No external wallet is linked to this Coretta account. Link and verify one in Settings, or say “my Coretta wallet” instead.";
+          const a = msg("assistant", content);
+          setMessages((m) => [...m, a]);
+          void persistMessage("assistant", content, a.id);
+          setPhase("idle");
+          return;
+        }
+        // Keep the full account-bound address through risk checks, estimates, and execution.
+        previewBase.recipient = resolved.address;
+      } catch {
+        const content = "I couldn't resolve the wallet attached to your Coretta account. Try again shortly.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+    }
+
+    const riskGroups = new Map<string, string[]>();
+    for (const entry of previewBase.batch ?? []) {
+      if (entry.identityType !== "address") continue;
+      const chain =
+        entry.destinationChain ?? previewBase.destinationChain ?? "Arc_Testnet";
+      const addresses = riskGroups.get(chain) ?? [];
+      addresses.push(entry.name);
+      riskGroups.set(chain, addresses);
+    }
+    if (/^0x[a-fA-F0-9]{40}$/.test(previewBase.recipient)) {
+      const chain = previewBase.destinationChain ?? "Arc_Testnet";
+      const addresses = riskGroups.get(chain) ?? [];
+      addresses.push(previewBase.recipient);
+      riskGroups.set(chain, addresses);
+    }
+    if (riskGroups.size > 0) {
+      try {
+        for (const [chain, addresses] of riskGroups) {
+          const risk = await apiFetch<{
+            allowed: boolean;
+            assessments: Array<{
+              address: string;
+              allowed: boolean;
+              category: string;
+              message: string;
+            }>;
+          }>("/v1/security/recipients/check", {
+            method: "POST",
+            body: JSON.stringify({ chain, addresses }),
+          });
+          const blocked = risk.assessments.find(
+            (assessment) => !assessment.allowed,
+          );
+          if (!risk.allowed || blocked) {
+            const content =
+              blocked?.message ??
+              "Coretta blocked this recipient after its safety check.";
+            const a = msg("assistant", content);
+            setMessages((m) => [...m, a]);
+            void persistMessage("assistant", content, a.id);
+            setPhase("idle");
+            return;
+          }
+        }
+      } catch (error) {
+        const content =
+          error instanceof Error
+            ? `I couldn't verify the recipient safely: ${error.message}`
+            : "I couldn't verify the recipient safely. No preview was created.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+    }
+
+    const isSwap =
+      previewBase.action === "swapUSDCtoEURC" ||
+      previewBase.action === "swapEURCtoUSDC" ||
+      previewBase.action === "swapAndSend" ||
+      previewBase.action === "swapAndBridge";
+    const isBridge = previewBase.action === "bridgeUSDC";
+    if (isBridge && !previewBase.bridgeOperationId && !previewBase.bridgeBatchId) {
+      if (!getApiToken() || !previewBase.destinationChain) {
+        const content = "Sign in first so I can verify the CCTP route and fee estimate.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+      try {
+        const bridgeRecipients = (previewBase.batch ?? []).map((recipient) => ({
+          recipientAddress: recipient.name,
+          amount: recipient.amount,
+          destinationChain:
+            recipient.destinationChain ?? previewBase.destinationChain!,
+        }));
+        const estimate = await apiFetch<{
+          ok: true;
+          amount: string;
+          totalAmount?: string;
+          feeTotal: string;
+          quotedAt: string;
+        }>(previewBase.batch?.length ? "/v1/bridge/batches/estimate" : "/v1/bridge/estimate", {
+          method: "POST",
+          body: JSON.stringify({
+            destinationChain: previewBase.destinationChain,
+            ...(previewBase.batch?.length
+              ? { recipients: bridgeRecipients }
+              : {
+                  recipientAddress: previewBase.recipient,
+                  amount: previewBase.amount,
+                }),
+          }),
+        });
+        if (estimate.totalAmount) {
+          previewBase.amount = estimate.totalAmount;
+          previewBase.totalAmount = estimate.totalAmount;
+        }
+        previewBase.estimatedBridgeFee = estimate.feeTotal;
+        previewBase.transactionFee = `${estimate.feeTotal} USDC estimated${previewBase.batch?.length ? " across all legs" : ""}`;
+        previewBase.quotedAt = estimate.quotedAt;
+      } catch (error) {
+        const content =
+          error instanceof Error
+            ? `I couldn't get a CCTP estimate: ${error.message}`
+            : "I couldn't get a CCTP estimate. No preview was created.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+    }
+    if (isSwap) {
+      if (!getApiToken()) {
+        const content =
+          "Sign in first so I can request a live swap quote. I won't infer a swap output amount.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        setPhase("idle");
+        return;
+      }
+      const tokenIn = previewBase.asset as "USDC" | "EURC";
+      const tokenOut = previewBase.receiveAsset as "USDC" | "EURC";
+      try {
+        const quote = await apiFetch<{
+          ok: true;
+          amountOut: string;
+          quotedAt: string;
+        }>("/v1/swap/estimate", {
+          method: "POST",
+          body: JSON.stringify({ tokenIn, tokenOut, amountIn: previewBase.amount }),
+        });
+        if (!requestIsCurrent()) return;
+        previewBase.receiveAmount = quote.amountOut;
+        previewBase.quoteStatus = "ready";
+        previewBase.quotedAt = quote.quotedAt;
+        if (
+          previewBase.action === "swapAndSend" &&
+          previewBase.allocation === "equal-output" &&
+          previewBase.batch?.length
+        ) {
+          const allocations = allocateEqualAmounts(quote.amountOut, previewBase.batch.length);
+          if (!allocations) {
+            const content = `The live quote is too small to divide into ${previewBase.batch.length} non-zero payments. Reduce the recipient count or increase the swap amount.`;
+            const a = msg("assistant", content);
+            setMessages((m) => [...m, a]);
+            void persistMessage("assistant", content, a.id);
+            setPhase("idle");
+            return;
+          }
+          previewBase.batch = previewBase.batch.map((recipient, index) => ({
+            ...recipient,
+            amount: allocations[index],
+          }));
+          previewBase.totalAmount = quote.amountOut;
+          previewBase.riskWarning =
+            assessBatchRisk(previewBase.batch, quote.amountOut) ?? previewBase.riskWarning;
+        }
+        if (previewBase.action === "swapAndSend" && !previewBase.totalAmount) {
+          previewBase.totalAmount = quote.amountOut;
+        }
+        if (previewBase.action === "swapAndBridge" && !previewBase.totalAmount) {
+          previewBase.totalAmount = quote.amountOut;
+        }
+        if (
+          (previewBase.action === "swapAndSend" ||
+            previewBase.action === "swapAndBridge") &&
+          previewBase.totalAmount &&
+          decimalToMicro(quote.amountOut) < decimalToMicro(previewBase.totalAmount)
+        ) {
+          const requestedLeg =
+            previewBase.action === "swapAndBridge" ? "bridge leg" : "payment leg";
+          const content = `The live quote returns about ${quote.amountOut} ${tokenOut}, which is less than the ${previewBase.totalAmount} ${tokenOut} in your ${requestedLeg}. Reduce that amount or increase the swap amount.`;
+          const a = msg("assistant", content);
+          setMessages((m) => [...m, a]);
+          void persistMessage("assistant", content, a.id);
+          setPhase("idle");
+          return;
+        }
+      } catch (error) {
+        const content =
+          error instanceof Error
+            ? `I couldn't get a live swap quote: ${error.message}`
+            : "I couldn't get a live swap quote. No preview was created.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+    }
+
+    if (previewBase.action === "swapAndBridge") {
+      if (
+        !getApiToken() ||
+        !previewBase.destinationChain ||
+        !previewBase.totalAmount
+      ) {
+        const content =
+          "I couldn't lock the swap and bridge plan because its destination or bridge amount is missing.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+      try {
+        const estimate = await apiFetch<{
+          ok: true;
+          feeTotal: string;
+          quotedAt: string;
+        }>("/v1/bridge/estimate", {
+          method: "POST",
+          body: JSON.stringify({
+            destinationChain: previewBase.destinationChain,
+            recipientAddress: previewBase.recipient,
+            amount: previewBase.totalAmount,
+          }),
+        });
+        previewBase.estimatedBridgeFee = estimate.feeTotal;
+        previewBase.transactionFee = `${estimate.feeTotal} USDC estimated`;
+        previewBase.quotedAt = estimate.quotedAt;
+      } catch (error) {
+        const content =
+          error instanceof Error
+            ? `I couldn't get a CCTP estimate for the second step: ${error.message}`
+            : "I couldn't get a CCTP estimate for the second step. No preview was created.";
+        const a = msg("assistant", content);
+        setMessages((m) => [...m, a]);
+        void persistMessage("assistant", content, a.id);
+        setPhase("idle");
+        return;
+      }
+    }
+
+    if (!requestIsCurrent()) return;
     const locked = await buildLockedPreview(previewBase);
+    if (!requestIsCurrent()) return;
     lockedRef.current = locked;
     setPreview(locked);
     setPhase("preview");
 
-    let lines: string[];
-    if (locked.batch && locked.batch.length > 1) {
-      lines = [
-        `I found ${locked.batch.length} recipients.`,
-        "",
-        ...locked.batch.map((r) => `${r.name} → ${r.amount} ${locked.asset}`),
-        "",
-        `Total: ${locked.totalAmount ?? locked.amount} ${locked.asset}`,
-        ...(locked.sponsorship === "user-paid" && locked.transactionFee
-          ? [`Transaction fee: ${locked.transactionFee}`]
-          : []),
-        `Recipients: ${locked.recipientCount ?? locked.batch.length}`,
-        "",
-        locked.riskWarning ?? "",
-        "Confirm transaction?",
-        "",
-        "Review the card below and tap Confirm & Sign. Parameters are locked after approval.",
-      ].filter(Boolean);
-    } else {
-      lines = [
-        `Here's your transfer preview:`,
-        `• ${locked.action}: ${locked.amount} ${locked.asset}${locked.receiveAsset ? ` → ${locked.receiveAmount} ${locked.receiveAsset}` : ""}`,
-        `• To: ${locked.recipient}`,
-        `• Network: ${locked.network}`,
-        ...(locked.sponsorship === "user-paid" && locked.transactionFee
-          ? [`• Transaction fee: ${locked.transactionFee}`]
-          : []),
-        ``,
-        `Review the card below and tap Confirm & Sign when ready. I will not execute until you approve.`,
-      ];
-    }
+    const sendAsset =
+      locked.action === "swapAndSend" || locked.action === "swapAndBridge"
+        ? locked.receiveAsset
+        : locked.asset;
+    const details = [
+      ...locked.steps.map((step, index) =>
+        step.detail ? `${index + 1}. ${step.label}\n${step.detail}` : `${index + 1}. ${step.label}`,
+      ),
+      "",
+      ...(locked.receiveAsset && locked.receiveAmount
+        ? [
+            `Live quote: ${locked.amount} ${locked.asset} → about ${locked.receiveAmount} ${locked.receiveAsset}`,
+          ]
+        : []),
+      ...(locked.batch && locked.batch.length > 1
+        ? [
+            `Recipients: ${locked.batch.length}`,
+            summarizeBatchAllocation(locked.batch, sendAsset ?? locked.asset, locked.allocation),
+            `Payment total: ${locked.totalAmount} ${sendAsset}`,
+          ]
+        : locked.action === "swapAndSend"
+          ? [`Payment: ${locked.totalAmount} ${sendAsset} → ${locked.recipient}`]
+          : locked.action === "swapAndBridge"
+            ? [`Bridge: ${locked.totalAmount} ${sendAsset} → ${locked.recipient}`]
+          : locked.action === "sendUSDC" || locked.action === "sendEURC"
+            ? [`Payment: ${locked.amount} ${locked.asset} → ${locked.recipient}`]
+            : []),
+      `Network: ${locked.network}`,
+      ...(locked.sponsorship === "user-paid" && locked.transactionFee
+        ? [`Transaction fee: ${locked.transactionFee}`]
+        : []),
+    ];
 
-    const a = msg("assistant", lines.join("\n"));
+    const content = composeDamianResponse(
+      {
+        event: "preview_ready",
+        facts: {
+          operationId: locked.id,
+          stepCount: locked.steps.length,
+          amount: locked.amount,
+          asset: locked.asset,
+          recipient: locked.recipient,
+          network: locked.network,
+          details,
+        },
+      },
+      { length: responseLength, seed: locked.id },
+    );
+    const a = msg("assistant", content);
     setMessages((m) => [...m, a]);
     void persistMessage("assistant", a.content, a.id);
   }, [
@@ -912,6 +1852,7 @@ export function useAgentChat(greeting?: string) {
     persistMessage,
     savedRecipientsEnabled,
     transactionHistoryEnabled,
+    executionsInFlight,
   ]);
 
   const confirmAndSign = useCallback(async (requiresWalletSignature = true) => {
@@ -938,50 +1879,166 @@ export function useAgentChat(greeting?: string) {
   }, []);
 
   const markExecuting = useCallback(() => {
-    setPhase("executing");
-  }, []);
+    const current = lockedRef.current;
+    if (!current) return;
+    pendingDraftRef.current = null;
+    setExecutionsInFlight((count) => count + 1);
+    setPhase("idle");
+    setPreview(null);
+    if (!current) return;
+    executionResponseLengthRef.current = responseLengthRef.current;
+
+    const facts = {
+      action: current.action,
+      receiveAsset: current.receiveAsset,
+      operationId: current.id,
+      amount: current.amount,
+      asset: current.asset,
+      recipient: current.recipient,
+      network: current.network,
+    };
+    const content = composeDamianResponse(
+      { event: "transaction_processing", facts },
+      { length: executionResponseLengthRef.current, seed: current.id },
+    );
+    const processingMessage = msg("assistant", content);
+    setMessages((messages) => [...messages, processingMessage]);
+    void persistMessage("assistant", content, processingMessage.id);
+
+    if (executionDelayTimerRef.current) clearTimeout(executionDelayTimerRef.current);
+    executionDelayTimerRef.current = setTimeout(() => {
+      if (lockedRef.current?.id !== current.id) return;
+      const delayedContent = composeDamianResponse(
+        { event: "transaction_delayed", facts },
+        { length: executionResponseLengthRef.current, seed: current.id },
+      );
+      const delayedMessage = msg("assistant", delayedContent);
+      setMessages((messages) => [...messages, delayedMessage]);
+      void persistMessage("assistant", delayedContent, delayedMessage.id);
+      executionDelayTimerRef.current = null;
+    }, TRANSACTION_DELAY_NOTICE_MS);
+  }, [persistMessage]);
 
   const updateTxCard = useCallback((record: TransactionRecord) => {
     setTxCards((prev) => {
       const idx = prev.findIndex((r) => r.id === record.id);
+      let next: TransactionRecord[];
       if (idx >= 0) {
-        const next = [...prev];
+        next = [...prev];
         next[idx] = { ...next[idx], ...record };
-        return next;
+      } else {
+        next = [record, ...prev];
       }
-      return [record, ...prev];
+      txCardsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const dismissTxCard = useCallback((id: string) => {
+    setTxCards((current) => {
+      const next = current.filter((record) => record.id !== id);
+      txCardsRef.current = next;
+      return next;
     });
   }, []);
 
   const completeExecution = useCallback((
     txHash?: string,
     txId?: string,
-    settlement?: { transferId?: string },
+    settlement?: {
+      transferId?: string;
+      outcome?: "settled" | "partial" | "pending" | "approval_pending";
+      settledCount?: number;
+      pendingCount?: number;
+      failedCount?: number;
+      totalCount?: number;
+      bridgeBatchId?: string;
+    },
   ) => {
     const completedPreview = lockedRef.current;
-    setPhase("complete");
+    if (
+      completedPreview &&
+      settlement?.bridgeBatchId &&
+      (settlement.failedCount ?? 0) > 0
+    ) {
+      const { id: _id, previewHash: _hash, createdAt: _createdAt, ...draft } = completedPreview;
+      lastFailedDraftRef.current = {
+        draft: {
+          ...structuredClone(draft),
+          bridgeBatchId: settlement.bridgeBatchId,
+        },
+        token: getApiToken(),
+      };
+      lastTerminalWasFailureRef.current = true;
+    } else {
+      lastTerminalWasFailureRef.current = false;
+    }
+    if (executionDelayTimerRef.current) {
+      clearTimeout(executionDelayTimerRef.current);
+      executionDelayTimerRef.current = null;
+    }
+    setPhase((current) => (current === "thinking" ? current : "idle"));
+    setExecutionsInFlight((count) => Math.max(0, count - 1));
     if (txId) {
+      const partialSummary = settlement?.outcome === "partial"
+        ? `${settlement.settledCount ?? 0} settled, ${settlement.pendingCount ?? 0} pending, and ${settlement.failedCount ?? 0} failed.`
+        : undefined;
       updateTxCard({
         id: txId,
-        status: txHash ? "settled" : "pending",
+        status:
+          settlement?.outcome === "partial"
+            ? "partial"
+            : settlement?.outcome === "settled" || txHash
+              ? "settled"
+              : "pending",
         asset: lockedRef.current?.asset ?? "USDC",
         amount: lockedRef.current?.amount ?? "0",
         recipient: lockedRef.current?.recipient ?? "",
         txHash,
         network: "Arc Testnet",
         timestamp: Date.now(),
+        failureReason: partialSummary,
       });
     }
-    if (txHash && completedPreview) {
-      const completion = msg(
-        "assistant",
-        `Done. ${completedPreview.amount} ${completedPreview.asset} went through.`,
+    if (completedPreview) {
+      const facts = {
+        action: completedPreview.action,
+        receiveAsset: completedPreview.receiveAsset,
+        operationId: completedPreview.id,
+        amount: completedPreview.amount,
+        asset: completedPreview.asset,
+        recipient: completedPreview.recipient,
+        network: completedPreview.network,
+        txHash,
+        settledCount: settlement?.settledCount,
+        pendingCount: settlement?.pendingCount,
+        failedCount: settlement?.failedCount,
+        totalCount: settlement?.totalCount,
+      };
+      const event = settlement?.outcome === "partial"
+        ? "transaction_partial" as const
+        : settlement?.outcome === "approval_pending"
+          ? "recipient_approval_pending" as const
+        : settlement?.outcome === "settled"
+          ? "transaction_settled" as const
+        : !txHash || settlement?.outcome === "pending"
+          ? "transaction_pending" as const
+          : "transaction_settled" as const;
+      const content = composeDamianResponse(
+        { event, facts },
+        { length: executionResponseLengthRef.current, seed: completedPreview.id },
       );
+      const completion = {
+        ...msg("assistant", content),
+        ...(event === "transaction_settled"
+          ? { kind: "receipt_offer" as const, receiptTxId: txId }
+          : {}),
+      };
       setMessages((m) => [...m, completion]);
       void persistMessage("assistant", completion.content, completion.id);
 
       const addressMatch = /^0x[a-fA-F0-9]{40}$/.exec(completedPreview.recipient.trim());
-      if (savedRecipientsEnabled && addressMatch) {
+      if (event === "transaction_settled" && savedRecipientsEnabled && addressMatch) {
         void apiFetch<{ recipients: Array<{ address: string }> }>(
           "/v1/ai/saved-recipients",
         )
@@ -1004,11 +2061,56 @@ export function useAgentChat(greeting?: string) {
     }
     setPreview(null);
     lockedRef.current = null;
-    setTimeout(() => setPhase("idle"), 2000);
   }, [persistMessage, savedRecipientsEnabled, updateTxCard]);
 
-  const failExecution = useCallback((txId: string, reason: string, txHash?: string) => {
-    setPhase("error");
+  const failExecution = useCallback((
+    txId: string,
+    reason: string,
+    txHash?: string,
+    recovery?: {
+      bridgeOperationId?: string;
+      bridgeBatchId?: string;
+      bridgeOnly?: boolean;
+    },
+  ) => {
+    const failedPreview = lockedRef.current;
+    if (failedPreview) {
+      const { id: _id, previewHash: _hash, createdAt: _createdAt, ...draft } = failedPreview;
+      const retryDraft =
+        recovery?.bridgeOnly && draft.action === "swapAndBridge"
+          ? {
+              ...draft,
+              action: "bridgeUSDC" as const,
+              amount: draft.totalAmount ?? draft.receiveAmount ?? draft.amount,
+              asset: "USDC" as const,
+              receiveAsset: undefined,
+              receiveAmount: undefined,
+              swapRoute: undefined,
+              totalAmount: undefined,
+              steps: draft.steps.filter((step) => step.kind === "bridge"),
+              executionPath: `CCTP to ${draft.destinationChainLabel ?? draft.destinationChain}`,
+            }
+          : draft;
+      lastFailedDraftRef.current = {
+        draft: {
+          ...structuredClone(retryDraft),
+          ...(recovery?.bridgeOperationId
+            ? { bridgeOperationId: recovery.bridgeOperationId }
+            : {}),
+          ...(recovery?.bridgeBatchId
+            ? { bridgeBatchId: recovery.bridgeBatchId }
+            : {}),
+        },
+        token: getApiToken(),
+      };
+      lastTerminalWasFailureRef.current = true;
+    }
+    if (executionDelayTimerRef.current) {
+      clearTimeout(executionDelayTimerRef.current);
+      executionDelayTimerRef.current = null;
+    }
+    setPhase((current) => (current === "thinking" ? current : "idle"));
+    setExecutionsInFlight((count) => Math.max(0, count - 1));
     updateTxCard({
       id: txId,
       status: "failed",
@@ -1022,24 +2124,61 @@ export function useAgentChat(greeting?: string) {
     });
     setPreview(null);
     lockedRef.current = null;
-    setTimeout(() => setPhase("idle"), 2000);
-  }, [updateTxCard]);
+    const content = composeDamianResponse(
+      {
+        event: "transaction_failed",
+        facts: {
+          action: failedPreview?.action,
+          receiveAsset: failedPreview?.receiveAsset,
+          operationId: failedPreview?.id ?? txId,
+          amount: failedPreview?.amount,
+          asset: failedPreview?.asset,
+          recipient: failedPreview?.recipient,
+          network: failedPreview?.network,
+          txHash,
+          reason,
+        },
+      },
+      { length: executionResponseLengthRef.current, seed: failedPreview?.id ?? txId },
+    );
+    const failure = msg("assistant", content);
+    setMessages((messages) => [...messages, failure]);
+    void persistMessage("assistant", failure.content, failure.id);
+  }, [persistMessage, updateTxCard]);
 
   const cancelPreview = useCallback(() => {
+    pendingDraftRef.current = null;
+    intentEpochRef.current += 1;
+    const cancelled = lockedRef.current;
     setPreview(null);
     lockedRef.current = null;
     setPhase("idle");
-    setMessages((m) => [
-      ...m,
-      msg("assistant", "Preview cancelled. What would you like to do next?"),
-    ]);
-  }, []);
+    const content = composeDamianResponse(
+      {
+        event: "preview_cancelled",
+        facts: cancelled
+          ? {
+              operationId: cancelled.id,
+              amount: cancelled.amount,
+              asset: cancelled.asset,
+              recipient: cancelled.recipient,
+            }
+          : undefined,
+      },
+      { length: responseLengthRef.current, seed: cancelled?.id },
+    );
+    const cancelledMessage = msg("assistant", content);
+    setMessages((messages) => [...messages, cancelledMessage]);
+    void persistMessage("assistant", content, cancelledMessage.id);
+  }, [persistMessage]);
 
   return {
     messages,
     phase,
     preview,
     txCards,
+    dismissTxCard,
+    executionsInFlight,
     submitUserMessage,
     confirmAndSign,
     markExecuting,
@@ -1047,8 +2186,17 @@ export function useAgentChat(greeting?: string) {
     failExecution,
     updateTxCard,
     cancelPreview,
+    decideIncomingApproval,
     setPhase,
     memoryEnabled,
+    conversations,
+    conversationId,
+    historyOpen,
+    setHistoryOpen,
+    refreshConversations,
+    loadConversation,
+    startNewConversation,
+    archiveConversation,
     resetSession,
   };
 }

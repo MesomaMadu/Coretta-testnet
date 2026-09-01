@@ -1,14 +1,12 @@
 import { prisma } from "@coretta/db";
 import { config } from "../config.js";
-import { encryptText, hashAiActor } from "../lib/crypto.js";
+import { decryptText, encryptText, hashAiActor } from "../lib/crypto.js";
 
 const SECRET_PATTERNS: RegExp[] = [
-  /\b(seed phrase|recovery phrase|mnemonic)\b/i,
-  /\bprivate key\b/i,
-  /\bpassphrase\b/i,
-  /\bsecret\b/i,
-  /\bapi key\b/i,
+  /\b(?:seed phrase|recovery phrase|mnemonic)\b\s*(?::|=|is)\s*(?:[a-z]{2,}\s+){11,23}[a-z]{2,}\b/i,
+  /\b(?:private key|passphrase|secret|api key)\b\s*(?::|=|is)\s*\S{8,}/i,
   /\bBearer\s+[A-Za-z0-9._~-]+\b/i,
+  /\b(?:sk|key)-[A-Za-z0-9_-]{12,}\b/i,
   /\b0x[a-fA-F0-9]{64}\b/, // likely private key
 ];
 
@@ -21,12 +19,17 @@ export function assertNoSecrets(text: string) {
 }
 
 export function redactAiSummary(text: string) {
+  return redactSensitiveIdentifiers(text).slice(0, 300);
+}
+
+export function redactSensitiveIdentifiers(text: string) {
   return text
+    .replace(/\b0x[a-fA-F0-9]{64}\b/g, "[sensitive 32-byte value]")
     .replace(/0x[a-fA-F0-9]{40}/g, "[wallet address]")
     .replace(/[\w.+-]+@[\w.-]+\.\w+/g, "[email address]")
-    .replace(/\b(?:\+?\d[\d\s().-]{7,}\d)\b/g, "[phone number]")
+    .replace(/\+?\d[\d\s().-]{7,}\d/g, "[phone number]")
     .replace(/\bBearer\s+[A-Za-z0-9._~-]+\b/gi, "[auth token]")
-    .slice(0, 300);
+    .replace(/\b(?:sk|key)-[A-Za-z0-9_-]{12,}\b/gi, "[credential]");
 }
 
 export async function getOrCreateActorForUser(userId: string) {
@@ -43,20 +46,15 @@ export async function getOrCreateActorForUser(userId: string) {
 }
 
 export async function ensureDefaultPreferences(actorId: string) {
-  await Promise.all(
-    [
-      ["memoryEnabled", "true"],
-      ["personalizationEnabled", "true"],
-      ["transactionHistoryEnabled", "false"],
-      ["savedRecipientsEnabled", "false"],
-    ].map(([key, value]) =>
-      prisma.aiPreference.upsert({
-        where: { actorId_key: { actorId, key } },
-        update: {},
-        create: { actorId, key, value },
-      }),
-    ),
-  );
+  await prisma.aiPreference.createMany({
+    data: [
+      { actorId, key: "memoryEnabled", value: "true" },
+      { actorId, key: "personalizationEnabled", value: "true" },
+      { actorId, key: "transactionHistoryEnabled", value: "false" },
+      { actorId, key: "savedRecipientsEnabled", value: "false" },
+    ],
+    skipDuplicates: true,
+  });
 }
 
 export async function getPreferences(actorId: string) {
@@ -199,7 +197,7 @@ export async function createMessage(params: {
     if (!conversation) throw new Error("AI_CONVERSATION_NOT_FOUND");
   }
   const contentEnc = encryptText(params.content, config.aiMemoryKey);
-  return prisma.aiMessage.create({
+  const message = await prisma.aiMessage.create({
     data: {
       actorId: params.actorId,
       conversationId: params.conversationId ?? null,
@@ -209,12 +207,83 @@ export async function createMessage(params: {
       clientMessageId: params.clientMessageId,
     },
   });
+  if (params.conversationId) {
+    const current = await prisma.aiConversation.findUnique({
+      where: { id: params.conversationId },
+      select: { title: true },
+    });
+    const shouldTitle =
+      params.role === "user" &&
+      (!current?.title || current.title === "Coretta session");
+    await prisma.aiConversation.update({
+      where: { id: params.conversationId },
+      data: {
+        updatedAt: new Date(),
+        ...(shouldTitle
+          ? { title: redactAiSummary(params.content).trim().slice(0, 80) }
+          : {}),
+      },
+    });
+  }
+  return message;
 }
 
 export async function createConversation(actorId: string, title?: string) {
   return prisma.aiConversation.create({
-    data: { actorId, title },
+    data: { actorId, title: title ? redactAiSummary(title) : undefined },
   });
+}
+
+export async function listConversations(actorId: string) {
+  return prisma.aiConversation.findMany({
+    where: { actorId, deletedAt: null },
+    orderBy: { updatedAt: "desc" },
+    take: 100,
+    include: {
+      messages: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { contentSummary: true },
+      },
+      _count: { select: { messages: true } },
+    },
+  });
+}
+
+export async function getConversationMessages(actorId: string, conversationId: string) {
+  const conversation = await prisma.aiConversation.findFirst({
+    where: { id: conversationId, actorId, deletedAt: null },
+    include: {
+      messages: {
+        where: { deletedAt: null },
+        orderBy: { createdAt: "asc" },
+        take: 500,
+      },
+    },
+  });
+  if (!conversation) return null;
+  return {
+    ...conversation,
+    messages: conversation.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: decryptText(message.contentEnc, config.aiMemoryKey),
+      createdAt: message.createdAt,
+    })),
+  };
+}
+
+export async function setConversationStatus(params: {
+  actorId: string;
+  conversationId: string;
+  status: "ACTIVE" | "ARCHIVED";
+}) {
+  const result = await prisma.aiConversation.updateMany({
+    where: { id: params.conversationId, actorId: params.actorId, deletedAt: null },
+    data: { status: params.status },
+  });
+  return result.count > 0;
 }
 
 export async function createFeedback(params: {
@@ -227,6 +296,7 @@ export async function createFeedback(params: {
   contextJson?: string | null;
 }) {
   if (params.comment) assertNoSecrets(params.comment);
+  if (params.contextJson) assertNoSecrets(params.contextJson);
   if (params.messageId) {
     const message = await prisma.aiMessage.findFirst({
       where: { id: params.messageId, actorId: params.actorId, deletedAt: null },
@@ -246,7 +316,9 @@ export async function createFeedback(params: {
       messageId: params.messageId ?? null,
       issueType: params.issueType ?? null,
       commentEnc,
-      contextJson: params.contextJson ?? null,
+      contextJson: params.contextJson
+        ? redactSensitiveIdentifiers(params.contextJson).slice(0, 5_000)
+        : null,
     },
   });
 }

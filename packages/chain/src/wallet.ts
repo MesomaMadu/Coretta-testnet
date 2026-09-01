@@ -44,9 +44,25 @@ export async function getUsdcBalanceMicro(
   address: Address,
 ): Promise<bigint> {
   const { USDC_ADDRESS } = await import("@coretta/shared");
+  return getTokenBalanceMicro(client, address, USDC_ADDRESS as Address);
+}
+
+export async function getEurcBalanceMicro(
+  client: PublicClient,
+  address: Address,
+): Promise<bigint> {
+  const { EURC_ADDRESS } = await import("@coretta/shared");
+  return getTokenBalanceMicro(client, address, EURC_ADDRESS as Address);
+}
+
+export async function getTokenBalanceMicro(
+  client: PublicClient,
+  address: Address,
+  tokenAddress: Address,
+): Promise<bigint> {
   const { erc20Abi } = await import("viem");
   const balance = await client.readContract({
-    address: USDC_ADDRESS as Address,
+    address: tokenAddress,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [address],

@@ -15,6 +15,10 @@ const nextConfig = {
     if (process.platform === "win32" && config.cache && !dev) {
       config.cache = Object.freeze({ type: "memory" });
     }
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias ?? {}),
+      ".js": [".ts", ".tsx", ".js"],
+    };
     config.resolve.alias = {
       ...config.resolve.alias,
       // Privy loads this optional integration only inside Farcaster Solana mini apps.

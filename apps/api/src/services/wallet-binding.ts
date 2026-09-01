@@ -11,6 +11,23 @@ const PREF_BOUND_WALLET = "boundPrimaryWallet";
 const PREF_SMART_ACTIVE = "smartWalletActivated";
 const PREF_SMART_ACTIVATED_AT = "smartWalletActivatedAt";
 
+async function assertLinkedWallet(userId: string, walletAddress: string) {
+  const normalized = walletAddress.toLowerCase();
+  const identity = await prisma.identity.findUnique({
+    where: {
+      type_normalizedValue: {
+        type: "wallet",
+        normalizedValue: normalized,
+      },
+    },
+    select: { userId: true },
+  });
+  if (!identity || identity.userId !== userId) {
+    throw new Error("WALLET_NOT_LINKED");
+  }
+  return normalized;
+}
+
 export async function getWalletBindingStatus(userId: string) {
   const actor = await getOrCreateActorForUser(userId);
   const prefs = await getPreferences(actor.id);
@@ -30,7 +47,7 @@ export async function getWalletBindingStatus(userId: string) {
 
 export async function activateSmartWallet(userId: string, primaryWalletAddress: string) {
   const actor = await getOrCreateActorForUser(userId);
-  const normalized = primaryWalletAddress.toLowerCase();
+  const normalized = await assertLinkedWallet(userId, primaryWalletAddress);
   await setPreference(actor.id, PREF_BOUND_WALLET, normalized);
   await setPreference(actor.id, PREF_SMART_ACTIVE, "true");
   await setPreference(actor.id, PREF_SMART_ACTIVATED_AT, new Date().toISOString());
@@ -49,7 +66,7 @@ export async function activateSmartWallet(userId: string, primaryWalletAddress: 
 
 export async function bindPrimaryWallet(userId: string, primaryWalletAddress: string) {
   const actor = await getOrCreateActorForUser(userId);
-  const normalized = primaryWalletAddress.toLowerCase();
+  const normalized = await assertLinkedWallet(userId, primaryWalletAddress);
   await setPreference(actor.id, PREF_BOUND_WALLET, normalized);
   await createAuditEvent({
     actorId: userId,

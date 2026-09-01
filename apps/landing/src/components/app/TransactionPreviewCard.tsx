@@ -1,6 +1,7 @@
 "use client";
 
-import { Shield, X } from "lucide-react";
+import { ArrowDown, Check, Shield, X } from "lucide-react";
+import { motion, useReducedMotion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import type { TransactionPreview } from "@/lib/agent/types";
 import type { AgentPhase } from "@/lib/agent/types";
@@ -31,9 +32,17 @@ export default function TransactionPreviewCard({
   smartWalletActive = false,
 }: Props) {
   const locked = phase === "preview" || phase === "awaiting_signature";
+  const reduceMotion = useReducedMotion();
+  const paymentAsset =
+    preview.action === "swapAndSend" || preview.action === "swapAndBridge"
+      ? preview.receiveAsset
+      : preview.asset;
 
   return (
-    <div
+    <motion.div
+      initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: reduceMotion ? 0 : 0.2 }}
       className="rounded-2xl border border-black/15 bg-white p-4 shadow-sm"
       data-preview-hash={preview.previewHash}
       data-locked={locked ? "true" : "false"}
@@ -64,7 +73,41 @@ export default function TransactionPreviewCard({
       )}
 
       <dl className="space-y-2 text-sm">
-        <Row label="Action" value={preview.action} />
+        <Row
+          label="Action"
+          value={
+            preview.action === "swapAndSend"
+              ? "Swap and send"
+              : preview.action === "swapAndBridge"
+                ? "Swap and bridge"
+              : preview.action === "bridgeUSDC"
+                ? preview.bridgeOperationId
+                  ? "Resume CCTP transfer"
+                  : "Bridge with CCTP"
+              : preview.action.startsWith("swap")
+                ? "Swap"
+                : "Send"
+          }
+        />
+        <div className="rounded-xl border border-black/10 bg-[#F7F7F7] p-3">
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-black/40">
+            Execution plan
+          </p>
+          <ol className="space-y-1.5">
+            {preview.steps.map((step, index) => (
+              <li key={step.id} className="flex gap-2 text-xs">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-black text-[10px] text-white">
+                  {phase === "awaiting_signature" ? <Check className="h-3 w-3" /> : index + 1}
+                </span>
+                <span>
+                  <span className="block font-medium text-black">{step.label}</span>
+                  <span className="text-black/50">{step.detail}</span>
+                </span>
+                {index < preview.steps.length - 1 && <ArrowDown className="ml-auto h-3 w-3 text-black/25" />}
+              </li>
+            ))}
+          </ol>
+        </div>
         {preview.batch && preview.batch.length > 1 ? (
           <>
             <Row
@@ -73,7 +116,7 @@ export default function TransactionPreviewCard({
             />
             <Row
               label="Total"
-              value={`${preview.totalAmount ?? preview.amount} ${preview.asset}`}
+              value={`${preview.totalAmount ?? preview.amount} ${paymentAsset}`}
             />
             <div className="max-h-48 space-y-2 overflow-y-auto rounded-lg border border-black/10 bg-[#F5F5F5] p-2">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-black/40">
@@ -92,7 +135,7 @@ export default function TransactionPreviewCard({
                       </span>
                     </span>
                     <span className="shrink-0 font-semibold text-black">
-                      {r.amount} {preview.asset}
+                      {r.amount} {paymentAsset}
                     </span>
                   </div>
                   <span
@@ -104,6 +147,11 @@ export default function TransactionPreviewCard({
                   >
                     {r.name}
                   </span>
+                  {r.destinationChainLabel ? (
+                    <span className="text-[10px] text-black/45">
+                      {r.destinationChainLabel}
+                    </span>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -114,13 +162,40 @@ export default function TransactionPreviewCard({
             {preview.receiveAsset && (
               <Row
                 label="Receive"
-                value={`${preview.receiveAmount} ${preview.receiveAsset}`}
+                value={`${preview.receiveAmount ?? "Quote unavailable"} ${preview.receiveAsset}`}
               />
             )}
-            <Row label="Recipient" value={preview.recipient} />
+            {(preview.action === "sendUSDC" ||
+              preview.action === "sendEURC" ||
+              preview.action === "swapAndSend" ||
+              preview.action === "swapAndBridge" ||
+              preview.action === "bridgeUSDC") && (
+              <Row label="Recipient" value={preview.recipient} />
+            )}
+            {preview.action === "swapAndSend" && preview.totalAmount && (
+              <Row label="Payment" value={`${preview.totalAmount} ${preview.receiveAsset}`} />
+            )}
+            {preview.action === "swapAndBridge" && preview.totalAmount && (
+              <Row label="Bridge" value={`${preview.totalAmount} ${preview.receiveAsset}`} />
+            )}
           </>
         )}
         {preview.swapRoute && <Row label="Route" value={preview.swapRoute} />}
+        {preview.destinationChainLabel && (
+          <Row label="Destination" value={preview.destinationChainLabel} />
+        )}
+        {preview.estimatedBridgeFee && (
+          <Row label="Estimated CCTP fees" value={`${preview.estimatedBridgeFee} USDC`} />
+        )}
+        {preview.quotedAt && (
+          <Row
+            label="Quote"
+            value={`Live at ${new Date(preview.quotedAt).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}`}
+          />
+        )}
         <Row label="Network" value={preview.network} />
         {preview.sponsorship === "user-paid" && preview.transactionFee && (
           <Row label="Transaction fee" value={preview.transactionFee} />
@@ -170,7 +245,7 @@ export default function TransactionPreviewCard({
           Sign in with Privy email or connect a wallet to continue.
         </p>
       )}
-    </div>
+    </motion.div>
   );
 }
 

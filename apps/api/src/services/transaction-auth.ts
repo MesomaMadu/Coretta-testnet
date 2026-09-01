@@ -3,12 +3,13 @@ import {
   ARC_TESTNET_CHAIN_ID,
   normalizeWalletAddress,
   type RemitRequest,
+  type CctpEvmTestnetChainId,
   type TransactionAuthorizationIntent,
 } from "@coretta/shared";
 import type { AuthUser } from "../types.js";
+import { prisma } from "@coretta/db";
 
 const MAX_MESSAGE_AGE_MS = 10 * 60 * 1000;
-const usedSwapNonces = new Map<string, number>();
 
 /**
  * Privy email-only accounts authorize managed-wallet actions with their
@@ -82,9 +83,23 @@ function sameRemitRequest(a: RemitRequest, b: RemitRequest): boolean {
   );
 }
 
-function pruneUsedSwapNonces(now: number) {
-  for (const [key, expiry] of usedSwapNonces) {
-    if (expiry <= now) usedSwapNonces.delete(key);
+async function consumeTransactionNonce(userId: string, nonce: string) {
+  const now = new Date();
+  await prisma.transactionAuthorizationNonce.deleteMany({
+    where: { expiresAt: { lte: now } },
+  });
+  try {
+    await prisma.transactionAuthorizationNonce.create({
+      data: {
+        userId,
+        nonce,
+        expiresAt: new Date(now.getTime() + MAX_MESSAGE_AGE_MS),
+      },
+    });
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "P2002") throw new Error("AUTHORIZATION_REPLAYED");
+    throw error;
   }
 }
 
@@ -113,22 +128,175 @@ export async function authorizeSwap(params: {
   amountIn: string;
 }) {
   const parsed = await verifyAuthorization(params);
+  const intent =
+    parsed.intent.action === "swap" ||
+    parsed.intent.action === "swap_and_bridge"
+      ? parsed.intent
+      : null;
+  const nonce =
+    intent?.action === "swap_and_bridge" ? intent.swapNonce : intent?.nonce;
   if (
-    parsed.intent.action !== "swap" ||
-    parsed.intent.tokenIn !== params.tokenIn ||
-    parsed.intent.tokenOut !== params.tokenOut ||
-    parsed.intent.amountIn !== params.amountIn ||
-    typeof parsed.intent.nonce !== "string" ||
-    parsed.intent.nonce.length < 16
+    !intent ||
+    intent.tokenIn !== params.tokenIn ||
+    intent.tokenOut !== params.tokenOut ||
+    intent.amountIn !== params.amountIn ||
+    typeof nonce !== "string" ||
+    nonce.length < 16 ||
+    nonce.length > 120
   ) {
     throw new Error("TRANSACTION_INTENT_MISMATCH");
   }
 
-  const now = Date.now();
-  pruneUsedSwapNonces(now);
-  const nonceKey = `${params.user.id}:${parsed.intent.nonce}`;
-  if (usedSwapNonces.has(nonceKey)) throw new Error("AUTHORIZATION_REPLAYED");
-  usedSwapNonces.set(nonceKey, now + MAX_MESSAGE_AGE_MS);
+  await consumeTransactionNonce(params.user.id, nonce);
+}
+
+export async function authorizeSwapAndSend(params: {
+  user: AuthUser;
+  message: string;
+  signature: string;
+  tokenIn: "USDC" | "EURC";
+  tokenOut: "USDC" | "EURC";
+  amountIn: string;
+  requests: RemitRequest[];
+}) {
+  const parsed = await verifyAuthorization(params);
+  const intent = parsed.intent.action === "swap_and_send" ? parsed.intent : null;
+  if (
+    !intent ||
+    !Array.isArray(intent.requests) ||
+    intent.tokenIn !== params.tokenIn ||
+    intent.tokenOut !== params.tokenOut ||
+    intent.amountIn !== params.amountIn ||
+    intent.requests.length !== params.requests.length ||
+    !params.requests.every((request, index) =>
+      sameRemitRequest(intent.requests[index], request),
+    ) ||
+    typeof intent.nonce !== "string" ||
+    intent.nonce.length < 16 ||
+    intent.nonce.length > 120
+  ) {
+    throw new Error("TRANSACTION_INTENT_MISMATCH");
+  }
+  await consumeTransactionNonce(params.user.id, intent.nonce);
+}
+
+export async function authorizeBridge(params: {
+  user: AuthUser;
+  message: string;
+  signature: string;
+  sourceChain: "Arc_Testnet";
+  destinationChain: CctpEvmTestnetChainId;
+  recipientAddress: string;
+  amount: string;
+  idempotencyKey: string;
+}) {
+  const parsed = await verifyAuthorization(params);
+  const intent =
+    parsed.intent.action === "bridge" ||
+    parsed.intent.action === "swap_and_bridge"
+      ? parsed.intent
+      : null;
+  const amount =
+    intent?.action === "swap_and_bridge" ? intent.bridgeAmount : intent?.amount;
+  const nonce =
+    intent?.action === "swap_and_bridge" ? intent.bridgeNonce : intent?.nonce;
+  if (
+    !intent ||
+    intent.sourceChain !== params.sourceChain ||
+    intent.destinationChain !== params.destinationChain ||
+    intent.recipientAddress.toLowerCase() !== params.recipientAddress.toLowerCase() ||
+    amount !== params.amount ||
+    intent.idempotencyKey !== params.idempotencyKey ||
+    typeof nonce !== "string" ||
+    nonce.length < 16 ||
+    nonce.length > 120
+  ) {
+    throw new Error("TRANSACTION_INTENT_MISMATCH");
+  }
+  await consumeTransactionNonce(params.user.id, nonce);
+}
+
+export async function authorizeBridgeBatch(params: {
+  user: AuthUser;
+  message: string;
+  signature: string;
+  sourceChain: "Arc_Testnet";
+  destinationChain: CctpEvmTestnetChainId;
+  recipients: Array<{
+    recipientAddress: string;
+    amount: string;
+    destinationChain: CctpEvmTestnetChainId;
+  }>;
+  idempotencyKey: string;
+}) {
+  const parsed = await verifyAuthorization(params);
+  const intent = parsed.intent.action === "bridge_batch" ? parsed.intent : null;
+  if (
+    !intent ||
+    intent.sourceChain !== params.sourceChain ||
+    intent.destinationChain !== params.destinationChain ||
+    intent.idempotencyKey !== params.idempotencyKey ||
+    !Array.isArray(intent.recipients) ||
+    intent.recipients.length !== params.recipients.length ||
+    !params.recipients.every(
+      (recipient, index) =>
+        intent.recipients[index]?.recipientAddress.toLowerCase() ===
+          recipient.recipientAddress.toLowerCase() &&
+        intent.recipients[index]?.amount === recipient.amount &&
+        intent.recipients[index]?.destinationChain ===
+          recipient.destinationChain,
+    ) ||
+    typeof intent.nonce !== "string" ||
+    intent.nonce.length < 16 ||
+    intent.nonce.length > 120
+  ) {
+    throw new Error("TRANSACTION_INTENT_MISMATCH");
+  }
+  await consumeTransactionNonce(params.user.id, intent.nonce);
+}
+
+export async function authorizeBridgeRetry(params: {
+  user: AuthUser;
+  message: string;
+  signature: string;
+  operationId: string;
+}) {
+  const parsed = await verifyAuthorization(params);
+  const intent = parsed.intent.action === "bridge_retry" ? parsed.intent : null;
+  if (
+    !intent ||
+    intent.operationId !== params.operationId ||
+    typeof intent.nonce !== "string" ||
+    intent.nonce.length < 16 ||
+    intent.nonce.length > 120
+  ) {
+    throw new Error("TRANSACTION_INTENT_MISMATCH");
+  }
+  await consumeTransactionNonce(params.user.id, intent.nonce);
+}
+
+export async function authorizeBridgeBatchRetry(params: {
+  user: AuthUser;
+  message: string;
+  signature: string;
+  batchId: string;
+  operationIds: string[];
+}) {
+  const parsed = await verifyAuthorization(params);
+  const intent = parsed.intent.action === "bridge_batch_retry" ? parsed.intent : null;
+  if (
+    !intent ||
+    intent.batchId !== params.batchId ||
+    !Array.isArray(intent.operationIds) ||
+    intent.operationIds.length !== params.operationIds.length ||
+    !params.operationIds.every((operationId, index) => intent.operationIds[index] === operationId) ||
+    typeof intent.nonce !== "string" ||
+    intent.nonce.length < 16 ||
+    intent.nonce.length > 120
+  ) {
+    throw new Error("TRANSACTION_INTENT_MISMATCH");
+  }
+  await consumeTransactionNonce(params.user.id, intent.nonce);
 }
 
 async function verifyAuthorization(params: {

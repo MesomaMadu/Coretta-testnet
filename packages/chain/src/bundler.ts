@@ -19,10 +19,13 @@ export function getBundlerRpcUrl(chainId = ARC_TESTNET_CHAIN_ID): string {
   return `https://public.pimlico.io/v2/${chainId}/rpc`;
 }
 
-export function createArcPublicClient(rpcUrl?: string): PublicClient {
+export function createArcPublicClient(
+  rpcUrl?: string,
+  transportOptions?: { timeout?: number; retryCount?: number },
+): PublicClient {
   return createPublicClient({
     chain: arcTestnet,
-    transport: http(rpcUrl),
+    transport: http(rpcUrl, transportOptions),
   });
 }
 

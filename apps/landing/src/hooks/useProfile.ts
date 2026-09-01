@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiFetch, getApiToken } from "@/lib/api";
+import { ApiError, apiFetch, getApiToken } from "@/lib/api";
 
 interface PreferredNameServerState {
   preferredName: string;
@@ -38,6 +38,31 @@ const DEFAULT: UserProfile = {
 };
 
 let preferredNameSync: Promise<PreferredNameServerState | null> | null = null;
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function savePreferredName(preferredName: string) {
+  const delays = [0, 500, 1_200];
+  let lastError: unknown;
+  for (const delay of delays) {
+    if (delay) await wait(delay);
+    try {
+      return await apiFetch<PreferredNameServerState>("/v1/me/profile", {
+        method: "PATCH",
+        body: JSON.stringify({ preferredName }),
+      });
+    } catch (error) {
+      lastError = error;
+      if (error instanceof ApiError && error.status < 500) throw error;
+    }
+  }
+  if (lastError instanceof ApiError) throw lastError;
+  throw new Error(
+    "Coretta could not reach its account database. Please retry in a moment.",
+  );
+}
 
 function toLocalPreferredNameState(state: PreferredNameServerState) {
   return {
@@ -146,10 +171,7 @@ export function useProfile() {
       }
 
       try {
-        const state = await apiFetch<PreferredNameServerState>("/v1/me/profile", {
-          method: "PATCH",
-          body: JSON.stringify({ preferredName }),
-        });
+        const state = await savePreferredName(preferredName);
         update({
           ...toLocalPreferredNameState(state),
           onboardingComplete: true,

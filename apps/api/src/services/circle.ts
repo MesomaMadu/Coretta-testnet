@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import type * as CircleDeveloperWallets from "@circle-fin/developer-controlled-wallets";
-import { USDC_ADDRESS } from "@coretta/shared";
+import {
+  USDC_ADDRESS,
+  type CctpEvmTestnetChainId,
+} from "@coretta/shared";
 import { config } from "../config.js";
 import { log } from "../lib/log.js";
 
@@ -11,6 +14,33 @@ const circleDeveloperWallets = createRequire(import.meta.url)(
   "@circle-fin/developer-controlled-wallets",
 ) as typeof CircleDeveloperWallets;
 const { initiateDeveloperControlledWalletsClient } = circleDeveloperWallets;
+
+const CIRCLE_SCA_DESTINATION_BLOCKCHAINS = {
+  Arbitrum_Sepolia: "ARB-SEPOLIA",
+  Avalanche_Fuji: "AVAX-FUJI",
+  Base_Sepolia: "BASE-SEPOLIA",
+  Ethereum_Sepolia: "ETH-SEPOLIA",
+  Monad_Testnet: "MONAD-TESTNET",
+  Optimism_Sepolia: "OP-SEPOLIA",
+  Polygon_Amoy_Testnet: "MATIC-AMOY",
+  Unichain_Sepolia: "UNI-SEPOLIA",
+} satisfies Partial<
+  Record<CctpEvmTestnetChainId, CircleDeveloperWallets.EvmBlockchain>
+>;
+
+export function circleScaBlockchainForCctpDestination(
+  destinationChain: CctpEvmTestnetChainId,
+): CircleDeveloperWallets.EvmBlockchain | null {
+  return CIRCLE_SCA_DESTINATION_BLOCKCHAINS[
+    destinationChain as keyof typeof CIRCLE_SCA_DESTINATION_BLOCKCHAINS
+  ] ?? null;
+}
+
+export function isCircleScaCctpDestination(
+  destinationChain: CctpEvmTestnetChainId,
+) {
+  return circleScaBlockchainForCctpDestination(destinationChain) !== null;
+}
 
 export function getCircleClient() {
   if (!config.circleApiKey || !config.circleEntitySecret) {
@@ -45,6 +75,44 @@ export async function createCircleScaWallet() {
     throw new Error("Circle createWallets returned no wallet");
   }
   return { walletId: w.id, address: w.address as `0x${string}` };
+}
+
+/**
+ * Derives the existing Arc SCA onto a supported destination EVM testnet.
+ * Circle returns the same address on the target chain and treats repeats as
+ * an update of the already-derived wallet.
+ */
+export async function ensureCircleScaDestination(params: {
+  vendorWalletId: string;
+  scaAddress: string;
+  destinationChain: CctpEvmTestnetChainId;
+}) {
+  const blockchain = circleScaBlockchainForCctpDestination(
+    params.destinationChain,
+  );
+  if (!blockchain) throw new Error("CIRCLE_SCA_DESTINATION_UNAVAILABLE");
+
+  const response = await getCircleClient().deriveWallet({
+    id: params.vendorWalletId,
+    blockchain,
+  });
+  const wallet = response.data?.wallet;
+  if (!wallet?.id || !wallet.address) {
+    throw new Error("CIRCLE_SCA_DERIVATION_EMPTY");
+  }
+  if (wallet.address.toLowerCase() !== params.scaAddress.toLowerCase()) {
+    throw new Error("CIRCLE_SCA_DERIVATION_ADDRESS_MISMATCH");
+  }
+  log.info("circle", "Derived Coretta SCA on CCTP destination", {
+    destinationChain: params.destinationChain,
+    blockchain,
+    address: `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`,
+  });
+  return {
+    walletId: wallet.id,
+    address: wallet.address,
+    blockchain,
+  };
 }
 
 /**

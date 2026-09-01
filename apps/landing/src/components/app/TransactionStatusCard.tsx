@@ -1,31 +1,57 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
+  CircleAlert,
   ChevronDown,
   ChevronUp,
   Clock3,
   Copy,
   ExternalLink,
+  ReceiptText,
+  X,
   XCircle,
 } from "lucide-react";
 import type { TransactionRecord } from "@/lib/transaction-store";
 import { cn } from "@/lib/utils";
+import ResponseFeedback from "@/components/ai/ResponseFeedback";
 
 interface Props {
   record: TransactionRecord;
+  onDismiss: (id: string) => void;
+  onViewReceipt: (id: string) => void;
 }
 
-export default function TransactionStatusCard({ record }: Props) {
+export default function TransactionStatusCard({ record, onDismiss, onViewReceipt }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [remainingMs, setRemainingMs] = useState(10_000);
+
+  useEffect(() => {
+    if (record.status !== "settled") {
+      setRemainingMs(10_000);
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      const remaining = Math.max(0, 10_000 - (Date.now() - startedAt));
+      setRemainingMs(remaining);
+      if (remaining === 0) {
+        window.clearInterval(timer);
+        onDismiss(record.id);
+      }
+    }, 200);
+    return () => window.clearInterval(timer);
+  }, [onDismiss, record.id, record.status]);
 
   const statusLabel =
     record.status === "pending"
       ? "Pending"
       : record.status === "settled"
         ? "Success"
+        : record.status === "partial"
+          ? "Partial"
         : "Failure";
 
   const title =
@@ -33,13 +59,17 @@ export default function TransactionStatusCard({ record }: Props) {
       ? "Transaction Submitted"
       : record.status === "settled"
         ? "Transaction successful"
+        : record.status === "partial"
+          ? "Transaction partially completed"
         : "Transaction failure";
 
   const message =
     record.status === "pending"
-      ? "Your transaction has been submitted and is awaiting confirmation."
+      ? record.pendingReason ?? "Your transaction has been submitted and is awaiting confirmation."
       : record.status === "settled"
         ? "Your transaction has been successfully settled."
+        : record.status === "partial"
+          ? record.failureReason ?? "Some parts completed and others did not."
         : record.failureReason ?? "An unknown execution error occurred.";
 
   const StatusIcon =
@@ -47,6 +77,8 @@ export default function TransactionStatusCard({ record }: Props) {
       ? Clock3
       : record.status === "settled"
         ? CheckCircle2
+        : record.status === "partial"
+          ? CircleAlert
         : XCircle;
 
   const copyHash = async () => {
@@ -58,10 +90,13 @@ export default function TransactionStatusCard({ record }: Props) {
 
   return (
     <div
+      role="status"
+      aria-live="polite"
       className={cn(
         "rounded-2xl border bg-white p-4 text-sm shadow-sm",
         record.status === "pending" && "border-black/20",
         record.status === "settled" && "border-black/30",
+        record.status === "partial" && "border-amber-500/40",
         record.status === "failed" && "border-rose-500/35",
       )}
     >
@@ -70,20 +105,34 @@ export default function TransactionStatusCard({ record }: Props) {
           <StatusIcon
             className={cn(
               "h-4 w-4 shrink-0",
-              record.status === "failed" ? "text-rose-600" : "text-[#7C3AED]",
+              record.status === "failed"
+                ? "text-rose-600"
+                : record.status === "partial"
+                  ? "text-amber-600"
+                  : "text-[#7C3AED]",
             )}
             aria-hidden="true"
           />
           <p className="font-semibold text-black">{title}</p>
         </div>
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="rounded-lg p-1 text-black/40 hover:bg-black/5"
-          aria-label={expanded ? "Collapse details" : "Expand details"}
-        >
-          {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="rounded-lg p-1 text-black/40 hover:bg-black/5"
+            aria-label={expanded ? "Collapse details" : "Expand details"}
+          >
+            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => onDismiss(record.id)}
+            className="rounded-lg p-1 text-black/40 hover:bg-black/5"
+            aria-label="Dismiss transaction status"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       <p className="text-xs text-black/55">Status: {statusLabel}</p>
@@ -121,6 +170,28 @@ export default function TransactionStatusCard({ record }: Props) {
 
       <p className="mt-2 text-xs text-black/50">{message}</p>
 
+      {record.status === "settled" && (
+        <div className="mt-3 space-y-2">
+          <div className="flex items-center justify-between text-[10px] text-black/40">
+            <span>Closing in {Math.ceil(remainingMs / 1000)}s</span>
+            <button
+              type="button"
+              onClick={() => onViewReceipt(record.id)}
+              className="inline-flex items-center gap-1 font-medium text-black hover:text-black/60"
+            >
+              <ReceiptText className="h-3 w-3" />
+              Receipt
+            </button>
+          </div>
+          <div className="h-1 overflow-hidden rounded-full bg-black/5" aria-hidden="true">
+            <div
+              className="h-full origin-left bg-black transition-[width] duration-200 motion-reduce:transition-none"
+              style={{ width: `${(remainingMs / 10_000) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {expanded && (
         <dl className="mt-3 space-y-1 border-t border-black/10 pt-3 text-xs">
           <Row label="Network" value={record.network} />
@@ -131,6 +202,20 @@ export default function TransactionStatusCard({ record }: Props) {
           {record.txHash && <Row label="Hash" value={record.txHash} mono />}
         </dl>
       )}
+
+      <ResponseFeedback
+        messageId={record.id}
+        context={{}}
+        transaction={{
+          id: record.id,
+          status: record.status,
+          operationKind: record.operationKind,
+          asset: record.asset,
+          amount: record.amount,
+          recipient: record.recipient,
+          network: record.network,
+        }}
+      />
     </div>
   );
 }

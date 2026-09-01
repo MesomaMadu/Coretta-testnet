@@ -19,15 +19,22 @@ model User {
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
-  identities      Identity[]
-  wallets         Wallet[]
-  sent            Transfer[]       @relation("SenderTransfers")
-  received        Transfer[]       @relation("RecipientTransfers")
-  savedRecipients SavedRecipient[]
-  sessions        Session[]
-  limits          UserLimit?
-  usage           UsageRecord?
-  riskProfile     UserRiskProfile?
+  identities            Identity[]
+  wallets               Wallet[]
+  sent                  Transfer[]                      @relation("SenderTransfers")
+  received              Transfer[]                      @relation("RecipientTransfers")
+  sentApprovals         TransferApproval[]              @relation("ApprovalSender")
+  receivedApprovals     TransferApproval[]              @relation("ApprovalRecipient")
+  notifications         UserNotification[]
+  authorizationNonces   TransactionAuthorizationNonce[]
+  swapAndSendOperations SwapAndSendOperation[]
+  bridgeOperations      BridgeOperation[]
+  bridgeBatches         BridgeBatch[]
+  savedRecipients       SavedRecipient[]
+  sessions              Session[]
+  limits                UserLimit?
+  usage                 UsageRecord?
+  riskProfile           UserRiskProfile?
 
   aiActors AiActor[]
 }
@@ -109,13 +116,16 @@ model Transfer {
   txHash             String?
   failureReason      String?
   settledAt          DateTime?
+  limitReservedAt    DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  senderWallet    Wallet  @relation("SenderWallet", fields: [senderWalletId], references: [id])
-  recipientWallet Wallet? @relation("RecipientWallet", fields: [recipientWalletId], references: [id])
-  sender          User    @relation("SenderTransfers", fields: [senderUserId], references: [id])
-  recipient       User?   @relation("RecipientTransfers", fields: [recipientUserId], references: [id])
+  senderWallet    Wallet             @relation("SenderWallet", fields: [senderWalletId], references: [id])
+  recipientWallet Wallet?            @relation("RecipientWallet", fields: [recipientWalletId], references: [id])
+  sender          User               @relation("SenderTransfers", fields: [senderUserId], references: [id])
+  recipient       User?              @relation("RecipientTransfers", fields: [recipientUserId], references: [id])
+  approval        TransferApproval?
+  notifications   UserNotification[]
   senderUserId    String
   recipientUserId String?
 
@@ -125,6 +135,122 @@ model Transfer {
   @@index([recipientUserId, createdAt])
   @@index([destinationAddress, createdAt])
   @@index([state])
+}
+
+model TransferApproval {
+  id              String    @id @default(cuid())
+  transferId      String    @unique
+  senderUserId    String
+  recipientUserId String
+  status          String    @default("PENDING") // PENDING | ACCEPTED | REJECTED | EXPIRED
+  expiresAt       DateTime
+  decidedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  transfer      Transfer           @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  sender        User               @relation("ApprovalSender", fields: [senderUserId], references: [id], onDelete: Cascade)
+  recipient     User               @relation("ApprovalRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+  notifications UserNotification[]
+
+  @@index([recipientUserId, status, createdAt])
+  @@index([senderUserId, status, createdAt])
+  @@index([status, expiresAt])
+}
+
+model UserNotification {
+  id         String    @id @default(cuid())
+  userId     String
+  transferId String?
+  approvalId String?
+  type       String
+  title      String
+  body       String
+  readAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transfer Transfer?         @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  approval TransferApproval? @relation(fields: [approvalId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@index([transferId])
+  @@index([approvalId])
+}
+
+model TransactionAuthorizationNonce {
+  id        String   @id @default(cuid())
+  userId    String
+  nonce     String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, nonce])
+  @@index([expiresAt])
+}
+
+model SwapAndSendOperation {
+  id             String   @id @default(cuid())
+  userId         String
+  idempotencyKey String   @unique
+  status         String   @default("EXECUTING") // EXECUTING | SWAP_SETTLED | PENDING | COMPLETE | PARTIAL | FAILED
+  swapTxHash     String?
+  failureReason  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model BridgeOperation {
+  id                  String   @id @default(cuid())
+  userId              String
+  idempotencyKey      String   @unique
+  sourceChain         String   @default("Arc_Testnet")
+  destinationChain    String
+  recipientAddress    String
+  amount              String
+  status              String   @default("EXECUTING") // EXECUTING | PENDING | COMPLETE | FAILED
+  resultJson          String?
+  sourceTxHash        String?
+  destinationTxHash   String?
+  failureReason       String?
+  batchId             String?
+  legIndex            Int?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  batch BridgeBatch? @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, updatedAt])
+  @@index([batchId, legIndex])
+  @@unique([batchId, legIndex])
+}
+
+model BridgeBatch {
+  id               String   @id @default(cuid())
+  userId           String
+  idempotencyKey   String   @unique
+  sourceChain      String   @default("Arc_Testnet")
+  destinationChain String
+  totalAmount      String
+  status           String   @default("QUEUED") // QUEUED | EXECUTING | PENDING | COMPLETE | PARTIAL | FAILED
+  failureReason    String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  operations BridgeOperation[]
+
+  @@index([userId, createdAt])
+  @@index([status, updatedAt])
 }
 
 model SavedRecipient {

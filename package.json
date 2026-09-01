@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@circle-fin/developer-controlled-wallets": "10.8.0",
-    "rpc-websockets": "9.2.0"
+    "rpc-websockets": "9.3.10"
   },
   "overrides": {
     "rpc-websockets": "$rpc-websockets"

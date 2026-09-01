@@ -1,8 +1,23 @@
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "@coretta/db";
-import { formatMicroToUsdc, ARC_EXPLORER } from "@coretta/shared";
-import { resolveSession } from "../services/auth.js";
+import {
+  ARC_EXPLORER,
+  DEFAULT_DAILY_SEND_LIMIT_MICRO,
+  DEFAULT_DAILY_TX_LIMIT,
+  MAX_BATCH_RECIPIENTS,
+  MAX_TRANSFER_MICRO,
+  CCTP_EVM_TESTNET_DESTINATIONS,
+  CCTP_SOURCE_CHAIN,
+  isCctpEvmTestnetChainId,
+  formatMicroToUsdc,
+  parseUsdcToMicro,
+} from "@coretta/shared";
+import {
+  invalidateSessionsForUser,
+  resolveSession,
+} from "../services/auth.js";
 import {
   createRemittance,
   executeRemittance,
@@ -10,6 +25,7 @@ import {
 } from "../services/orchestrator.js";
 import {
   getWalletBalanceMicro,
+  getWalletEurcBalanceMicro,
   findUserByIdentity,
   ensureCircleScaDeployed,
 } from "../services/wallet.js";
@@ -20,7 +36,7 @@ import {
 } from "../services/wallet-binding.js";
 import { createAuditEvent } from "../services/audit.js";
 import { touchPresence, getActiveCount } from "../services/presence.js";
-import { executeTokenSwap } from "../services/swap.js";
+import { estimateTokenSwap, executeTokenSwap } from "../services/swap.js";
 import { log } from "../lib/log.js";
 import {
   createConversation,
@@ -29,10 +45,13 @@ import {
   deleteMemory,
   ensureDefaultPreferences,
   getOrCreateActorForUser,
+  getConversationMessages,
   getPreferences,
+  listConversations,
   listMemories,
   retrieveMemories,
   setPreference,
+  setConversationStatus,
   clearMemories,
 } from "../services/ai.js";
 import {
@@ -57,6 +76,8 @@ import {
 
 import {
   anonymousUsageMetrics,
+  consumeAiRequestQuota,
+  consumeSwapRequestQuota,
   getUserUsageMetrics,
   getWalletUsageMetrics,
   trackUsageEvent,
@@ -69,11 +90,17 @@ import {
 import {
   authenticatePrivyEmail,
   inspectPrivyEmailAccount,
+  isPrivyConnectivityError,
   isPrivyConfigured,
 } from "../services/privy.js";
 import {
   authorizeRemit,
+  authorizeBridge,
+  authorizeBridgeBatch,
+  authorizeBridgeBatchRetry,
+  authorizeBridgeRetry,
   authorizeSwap,
+  authorizeSwapAndSend,
   requiresWalletTransactionAuthorization,
 } from "../services/transaction-auth.js";
 import {
@@ -81,6 +108,33 @@ import {
   recordWalletInteraction,
 } from "../services/wallet-interactions.js";
 import { normalizeWalletAddress } from "@coretta/shared";
+import { assessDamianInputSecurity } from "@coretta/shared/damian-security";
+import { shouldResetDailyLimits } from "../services/policy.js";
+import {
+  acceptApproval,
+  listApprovalsForUser,
+  listNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  queueRecipientApproval,
+  rejectApproval,
+} from "../services/approvals.js";
+import {
+  estimateCctpBridge,
+  estimateCctpBridgeBatch,
+  executeCctpBridge,
+  getCctpWalletBalances,
+  listCctpEvmTestnetDestinations,
+  parseBridgeResult,
+  retryCctpBridge,
+  serializeBridgeResult,
+  summarizeBridgeResult,
+} from "../services/cctp.js";
+import { assessEvmRecipient } from "../services/address-risk.js";
+import {
+  ensureCircleScaDestination,
+  isCircleScaCctpDestination,
+} from "../services/circle.js";
 
 const transactionAuthorizationSchema = z.object({
   message: z.string().min(100).max(20_000),
@@ -91,6 +145,116 @@ const TRANSIENT_DATABASE_ERROR =
   /P1001|P1002|P1017|Can't reach database server|connection pool|timed out fetching|ECONNRESET|ETIMEDOUT|ENOTFOUND/i;
 
 const PREFERRED_NAME_EDIT_INTERVAL_MS = 14 * 24 * 60 * 60 * 1000;
+
+const cctpDestinationSchema = z.string().refine(isCctpEvmTestnetChainId, {
+  message: "Unsupported CCTP EVM testnet destination.",
+});
+
+const cctpBridgeRequestSchema = z.object({
+  destinationChain: cctpDestinationSchema,
+  recipientAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  amount: z.string().regex(/^\d+(?:\.\d{1,6})?$/),
+});
+
+const cctpBridgeBatchRequestSchema = z.object({
+  destinationChain: cctpDestinationSchema,
+  recipients: z
+    .array(
+      z.object({
+        recipientAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+        amount: z.string().regex(/^\d+(?:\.\d{1,6})?$/),
+        destinationChain: cctpDestinationSchema.optional(),
+      }),
+    )
+    .min(2)
+    .max(MAX_BATCH_RECIPIENTS),
+});
+
+function validateCctpAmount(amount: string) {
+  const micro = parseUsdcToMicro(amount);
+  if (micro <= 0n) throw new Error("INVALID_AMOUNT");
+  if (micro > MAX_TRANSFER_MICRO) throw new Error("AMOUNT_EXCEEDS_MAX");
+  return micro;
+}
+
+function isOwnSmartWalletRecipient(
+  smartWalletAddress: string,
+  recipientAddress: string,
+) {
+  return smartWalletAddress.toLowerCase() === recipientAddress.toLowerCase();
+}
+
+const SMART_WALLET_CCTP_DESTINATION_MESSAGE =
+  "Your Coretta smart wallet can receive on Arbitrum Sepolia, Avalanche Fuji, Base Sepolia, Ethereum Sepolia, Monad Testnet, OP Sepolia, Polygon Amoy, and Unichain Sepolia. Use a verified external EVM address for the other supported CCTP destinations.";
+
+type CctpBatchRecipient = {
+  recipientAddress: string;
+  amount: string;
+  destinationChain: (typeof CCTP_EVM_TESTNET_DESTINATIONS)[number]["id"];
+};
+
+function normalizeCctpBatchRecipients(
+  defaultDestination: CctpBatchRecipient["destinationChain"],
+  recipients: Array<{
+    recipientAddress: string;
+    amount: string;
+    destinationChain?: CctpBatchRecipient["destinationChain"];
+  }>,
+): CctpBatchRecipient[] {
+  return recipients.map((recipient) => ({
+    ...recipient,
+    destinationChain: recipient.destinationChain ?? defaultDestination,
+  }));
+}
+
+function validateCctpBatch(
+  recipients: CctpBatchRecipient[],
+) {
+  const normalized = recipients.map(
+    (recipient) =>
+      `${recipient.destinationChain}:${recipient.recipientAddress.toLowerCase()}`,
+  );
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error("DUPLICATE_RECIPIENT");
+  }
+  const totalMicro = recipients.reduce(
+    (total, recipient) => total + validateCctpAmount(recipient.amount),
+    0n,
+  );
+  if (totalMicro > MAX_TRANSFER_MICRO) throw new Error("AMOUNT_EXCEEDS_MAX");
+  return { totalMicro, totalAmount: formatMicroToUsdc(totalMicro) };
+}
+
+async function refreshBridgeBatchStatus(batchId: string) {
+  const operations = await prisma.bridgeOperation.findMany({
+    where: { batchId },
+    select: { status: true, failureReason: true },
+  });
+  const complete = operations.filter((operation) => operation.status === "COMPLETE").length;
+  const failed = operations.filter((operation) => operation.status === "FAILED").length;
+  const pending = operations.filter((operation) => operation.status === "PENDING").length;
+  const queued = operations.filter((operation) => operation.status === "QUEUED").length;
+  const executing = operations.filter((operation) => operation.status === "EXECUTING").length;
+  const status =
+    complete === operations.length
+      ? "COMPLETE"
+      : failed === operations.length
+        ? "FAILED"
+        : failed > 0 && complete + pending + queued + executing > 0
+          ? "PARTIAL"
+          : pending > 0 && queued + executing === 0
+            ? "PENDING"
+            : "EXECUTING";
+  const failureReason =
+    failed > 0
+      ? `${failed} of ${operations.length} bridge legs failed. Retry only the failed legs.`
+      : null;
+  await prisma.bridgeBatch.update({
+    where: { id: batchId },
+    data: { status, failureReason },
+  });
+  return { status, complete, failed, pending, queued, executing, total: operations.length };
+}
 
 function preferredNameState(user: {
   preferredName: string | null;
@@ -109,7 +273,7 @@ function preferredNameState(user: {
   };
 }
 
-async function retryDatabaseRead<T>(operation: () => Promise<T>): Promise<T> {
+async function retryDatabaseOperation<T>(operation: () => Promise<T>): Promise<T> {
   const attempts = 3;
   let lastError: unknown;
 
@@ -129,12 +293,29 @@ async function retryDatabaseRead<T>(operation: () => Promise<T>): Promise<T> {
   throw lastError;
 }
 
+async function readWithinDeadline<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("BALANCE_READ_TIMEOUT")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function registerRoutes(app: FastifyInstance) {
   app.get("/health", async () => ({ ok: true, service: "coretta-api" }));
 
   app.get("/health/database", async (_req, reply) => {
     try {
-      await retryDatabaseRead(() => prisma.$queryRawUnsafe("SELECT 1"));
+      await retryDatabaseOperation(() => prisma.$queryRawUnsafe("SELECT 1"));
       return reply.send({ ok: true, database: "reachable" });
     } catch (error) {
       log.error("database", "Database health check failed", {
@@ -166,7 +347,7 @@ export async function registerRoutes(app: FastifyInstance) {
       const query = z
         .object({ address: z.string().regex(/^0x[a-fA-F0-9]{40}$/) })
         .parse(req.query);
-      const user = await retryDatabaseRead(() =>
+      const user = await retryDatabaseOperation(() =>
         findUserByIdentity("wallet", query.address),
       );
       return reply.send({
@@ -202,7 +383,7 @@ export async function registerRoutes(app: FastifyInstance) {
     }
     try {
       return reply.send(
-        await retryDatabaseRead(() => inspectPrivyEmailAccount(accessToken)),
+        await retryDatabaseOperation(() => inspectPrivyEmailAccount(accessToken)),
       );
     } catch (error) {
       const code = error instanceof Error ? error.message : "PRIVY_AUTH_FAILED";
@@ -211,6 +392,12 @@ export async function registerRoutes(app: FastifyInstance) {
         return reply.code(503).send({
           code: "DATABASE_UNAVAILABLE",
           message: "Coretta could not check this email account. Please retry.",
+        });
+      }
+      if (isPrivyConnectivityError(error)) {
+        return reply.code(503).send({
+          code: "PRIVY_UNAVAILABLE",
+          message: "Coretta could not reach Privy to verify this login session.",
         });
       }
       return reply.code(401).send({
@@ -308,6 +495,12 @@ export async function registerRoutes(app: FastifyInstance) {
           message: "Coretta could not save the verified email. Please retry.",
         });
       }
+      if (isPrivyConnectivityError(error)) {
+        return reply.code(503).send({
+          code: "PRIVY_UNAVAILABLE",
+          message: "Coretta could not reach Privy to verify this login session.",
+        });
+      }
       if (/Circle|wallet set|entity secret|createWallet/i.test(errorCode)) {
         return reply.code(502).send({
           code: "WALLET_PROVISIONING_FAILED",
@@ -322,7 +515,22 @@ export async function registerRoutes(app: FastifyInstance) {
   });
 
   app.get("/v1/user/usage", async (req, reply) => {
-    const user = await resolveSession(req.headers.authorization);
+    let user;
+    try {
+      user = await retryDatabaseOperation(() =>
+        resolveSession(req.headers.authorization),
+      );
+    } catch (error) {
+      log.error("database", "Session lookup could not reach the account database", {
+        url: req.url,
+        method: req.method,
+        message: error instanceof Error ? error.message : "DATABASE_UNAVAILABLE",
+      });
+      return reply.code(503).send({
+        code: "DATABASE_UNAVAILABLE",
+        message: "Coretta could not reach its account database. Please retry in a moment.",
+      });
+    }
     const query = (req.query ?? {}) as { walletAddress?: string };
     let walletAddress: string | null = null;
     if (query.walletAddress) {
@@ -547,7 +755,22 @@ export async function registerRoutes(app: FastifyInstance) {
     ) {
       return;
     }
-    const user = await resolveSession(req.headers.authorization);
+    let user;
+    try {
+      user = await retryDatabaseOperation(() =>
+        resolveSession(req.headers.authorization),
+      );
+    } catch (error) {
+      log.error("database", "Authenticated request could not reach the account database", {
+        url: req.url,
+        method: req.method,
+        message: error instanceof Error ? error.message : "DATABASE_UNAVAILABLE",
+      });
+      return reply.code(503).send({
+        code: "DATABASE_UNAVAILABLE",
+        message: "Coretta could not reach its account database. Please retry in a moment.",
+      });
+    }
     if (!user) {
       return reply.code(401).send({ code: "UNAUTHORIZED", message: "Invalid session" });
     }
@@ -558,17 +781,30 @@ export async function registerRoutes(app: FastifyInstance) {
     const user = req.user!;
     const wallet = user.wallets[0];
     let balanceMicro = 0n;
+    let balanceEurcMicro = 0n;
     if (wallet) {
-      balanceMicro = await getWalletBalanceMicro(
-        wallet.scaAddress as `0x${string}`,
-      );
+      try {
+        [balanceMicro, balanceEurcMicro] = await readWithinDeadline(
+          Promise.all([
+            getWalletBalanceMicro(wallet.scaAddress as `0x${string}`),
+            getWalletEurcBalanceMicro(wallet.scaAddress as `0x${string}`),
+          ]),
+          3_500,
+        );
+      } catch (error) {
+        log.warn("wallet", "Arc balances are temporarily unavailable", {
+          message: error instanceof Error ? error.message : "BALANCE_READ_FAILED",
+        });
+      }
     }
     const binding = await getWalletBindingStatus(user.id);
     return {
       id: user.id,
       walletAddress: wallet?.scaAddress,
       balanceUsdc: formatMicroToUsdc(balanceMicro),
+      balanceEurc: formatMicroToUsdc(balanceEurcMicro),
       balanceMicro: balanceMicro.toString(),
+      balanceEurcMicro: balanceEurcMicro.toString(),
       identities: user.identities.map((i) => ({
         type: i.type,
         value: i.normalizedValue,
@@ -594,20 +830,28 @@ export async function registerRoutes(app: FastifyInstance) {
 
     const now = new Date();
     const cutoff = new Date(now.getTime() - PREFERRED_NAME_EDIT_INTERVAL_MS);
-    const result = await prisma.user.updateMany({
-      where: {
-        id: user.id,
-        OR: [
-          { preferredName: null },
-          { preferredNameUpdatedAt: null },
-          { preferredNameUpdatedAt: { lte: cutoff } },
-        ],
-      },
-      data: { preferredName, preferredNameUpdatedAt: now },
-    });
+    const result = await retryDatabaseOperation(() =>
+      prisma.user.updateMany({
+        where: {
+          id: user.id,
+          OR: [
+            { preferredName: null },
+            { preferredNameUpdatedAt: null },
+            { preferredNameUpdatedAt: { lte: cutoff } },
+          ],
+        },
+        data: { preferredName, preferredNameUpdatedAt: now },
+      }),
+    );
 
     if (result.count === 0) {
-      const current = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+      const current = await retryDatabaseOperation(() =>
+        prisma.user.findUniqueOrThrow({ where: { id: user.id } }),
+      );
+      if (current.preferredName === preferredName) {
+        invalidateSessionsForUser(user.id);
+        return reply.send(preferredNameState(current));
+      }
       const state = preferredNameState(current);
       const retryAfterSeconds = state.nextPreferredNameEditAt
         ? Math.max(
@@ -627,6 +871,7 @@ export async function registerRoutes(app: FastifyInstance) {
         });
     }
 
+    invalidateSessionsForUser(user.id);
     return reply.send(
       preferredNameState({ preferredName, preferredNameUpdatedAt: now }),
     );
@@ -679,12 +924,23 @@ export async function registerRoutes(app: FastifyInstance) {
     return reply.send({ ok: true, results });
   });
 
-  app.post("/v1/wallet/activate", async (req) => {
+  app.post("/v1/wallet/activate", async (req, reply) => {
     const user = req.user!;
     const body = z
       .object({ primaryWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/) })
       .parse(req.body);
-    const res = await activateSmartWallet(user.id, body.primaryWalletAddress);
+    let res;
+    try {
+      res = await activateSmartWallet(user.id, body.primaryWalletAddress);
+    } catch (error) {
+      if (error instanceof Error && error.message === "WALLET_NOT_LINKED") {
+        return reply.code(403).send({
+          code: "WALLET_NOT_LINKED",
+          message: "Verify ownership and link this wallet before activating it.",
+        });
+      }
+      throw error;
+    }
     await trackUsageEvent({
       walletAddress: body.primaryWalletAddress.toLowerCase(),
       userId: user.id,
@@ -693,12 +949,22 @@ export async function registerRoutes(app: FastifyInstance) {
     return res;
   });
 
-  app.post("/v1/wallet/bind", async (req) => {
+  app.post("/v1/wallet/bind", async (req, reply) => {
     const user = req.user!;
     const body = z
       .object({ primaryWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/) })
       .parse(req.body);
-    return bindPrimaryWallet(user.id, body.primaryWalletAddress);
+    try {
+      return await bindPrimaryWallet(user.id, body.primaryWalletAddress);
+    } catch (error) {
+      if (error instanceof Error && error.message === "WALLET_NOT_LINKED") {
+        return reply.code(403).send({
+          code: "WALLET_NOT_LINKED",
+          message: "Verify ownership and link this wallet before binding it.",
+        });
+      }
+      throw error;
+    }
   });
 
   app.post("/v1/wallet/link-external", async (req, reply) => {
@@ -893,15 +1159,1082 @@ export async function registerRoutes(app: FastifyInstance) {
     });
   });
 
+  app.get("/v1/bridge/chains", async () => ({
+    sourceChain: CCTP_SOURCE_CHAIN,
+    token: "USDC",
+    destinations: listCctpEvmTestnetDestinations(),
+  }));
+
+  app.get("/v1/balances/chains", async (req, reply) => {
+    const wallet = req.user!.wallets[0];
+    if (!wallet) {
+      return reply.code(404).send({
+        code: "WALLET_MISSING",
+        message: "No Coretta smart wallet is available for this account.",
+      });
+    }
+    try {
+      return reply.send(await getCctpWalletBalances(wallet.scaAddress));
+    } catch (error) {
+      log.warn("cctp", "Cross-chain balance registry failed", {
+        message: error instanceof Error ? error.message : "CHAIN_BALANCES_FAILED",
+      });
+      return reply.code(503).send({
+        code: "CHAIN_BALANCES_UNAVAILABLE",
+        message: "Cross-chain balances are temporarily unavailable. Arc balances are still shown separately.",
+      });
+    }
+  });
+
+  app.post("/v1/security/recipients/check", async (req, reply) => {
+    const body = z
+      .object({
+        chain: z.string().min(2).max(80),
+        addresses: z
+          .array(z.string().regex(/^0x[a-fA-F0-9]{40}$/))
+          .min(1)
+          .max(MAX_BATCH_RECIPIENTS),
+      })
+      .parse(req.body);
+    if (
+      body.chain !== CCTP_SOURCE_CHAIN &&
+      !isCctpEvmTestnetChainId(body.chain)
+    ) {
+      return reply.code(422).send({
+        code: "UNSUPPORTED_RISK_NETWORK",
+        message: "Recipient checks are unavailable for that network.",
+      });
+    }
+    const unique = [...new Set(body.addresses.map((address) => address.toLowerCase()))];
+    const assessments = await Promise.all(
+      unique.map((address) => assessEvmRecipient({ address, chain: body.chain })),
+    );
+    return reply.send({
+      allowed: assessments.every((assessment) => assessment.allowed),
+      assessments,
+    });
+  });
+
+  app.post("/v1/bridge/batches/estimate", async (req, reply) => {
+    const parsed = cctpBridgeBatchRequestSchema.parse(req.body);
+    const recipients = normalizeCctpBatchRecipients(
+      parsed.destinationChain,
+      parsed.recipients,
+    );
+    let totalAmount: string;
+    try {
+      totalAmount = validateCctpBatch(recipients).totalAmount;
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "INVALID_BATCH";
+      return reply.code(422).send({
+        code,
+        message:
+          code === "DUPLICATE_RECIPIENT"
+            ? "Each destination wallet and network pair can appear only once in a bridge plan."
+            : code === "AMOUNT_EXCEEDS_MAX"
+              ? "The full CCTP batch is limited to 100 USDC."
+              : "Every bridge leg needs a positive USDC amount with up to six decimals.",
+      });
+    }
+
+    const user = req.user!;
+    const wallet = user.wallets[0];
+    if (!wallet?.vendorWalletId || wallet.vendor !== "circle_modular") {
+      return reply.code(422).send({
+        code: "CIRCLE_WALLET_REQUIRED",
+        message: "CCTP currently requires the Coretta Circle smart wallet.",
+      });
+    }
+    if (
+      recipients.some((recipient) =>
+        isOwnSmartWalletRecipient(wallet.scaAddress, recipient.recipientAddress),
+      ) &&
+      recipients.some(
+        (recipient) =>
+          isOwnSmartWalletRecipient(wallet.scaAddress, recipient.recipientAddress) &&
+          !isCircleScaCctpDestination(recipient.destinationChain),
+      )
+    ) {
+      return reply.code(422).send({
+        code: "SMART_WALLET_DESTINATION_UNAVAILABLE",
+        message: SMART_WALLET_CCTP_DESTINATION_MESSAGE,
+      });
+    }
+    const assessments = await Promise.all(
+      recipients.map((recipient) =>
+        assessEvmRecipient({
+          address: recipient.recipientAddress,
+          chain: recipient.destinationChain,
+        }),
+      ),
+    );
+    const blocked = assessments.find((assessment) => !assessment.allowed);
+    if (blocked) {
+      return reply.code(422).send({
+        code: blocked.category === "contract" ? "CONTRACT_RECIPIENT_BLOCKED" : "RECIPIENT_RISK_BLOCKED",
+        message: blocked.message,
+      });
+    }
+    try {
+      const estimate = await estimateCctpBridgeBatch({
+        walletAddress: wallet.scaAddress,
+        recipients,
+      });
+      return reply.send({ ok: true, totalAmount, ...estimate });
+    } catch (error) {
+      log.warn("cctp", "Bridge batch estimate failed", {
+        recipientCount: recipients.length,
+        message: error instanceof Error ? error.message : "CCTP_BATCH_ESTIMATE_FAILED",
+      });
+      return reply.code(422).send({
+        code: "CCTP_BATCH_ESTIMATE_FAILED",
+        message: "Coretta couldn't estimate every CCTP leg. No batch preview was created.",
+      });
+    }
+  });
+
+  app.post("/v1/bridge/batches", async (req, reply) => {
+    const parsed = cctpBridgeBatchRequestSchema
+      .extend({
+        idempotencyKey: z.string().uuid(),
+        authorization: transactionAuthorizationSchema.optional(),
+      })
+      .parse(req.body);
+    const recipients = normalizeCctpBatchRecipients(
+      parsed.destinationChain,
+      parsed.recipients,
+    );
+    let totalAmount: string;
+    try {
+      totalAmount = validateCctpBatch(recipients).totalAmount;
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "INVALID_BATCH";
+      return reply.code(422).send({
+        code,
+        message:
+          code === "DUPLICATE_RECIPIENT"
+            ? "Each destination wallet and network pair can appear only once in a bridge plan."
+            : code === "AMOUNT_EXCEEDS_MAX"
+              ? "The full CCTP batch is limited to 100 USDC."
+              : "The bridge batch contains an invalid amount.",
+      });
+    }
+
+    const user = req.user!;
+    if (requiresWalletTransactionAuthorization(user)) {
+      if (!parsed.authorization) {
+        return reply.code(401).send({
+          code: "WALLET_AUTHORIZATION_REQUIRED",
+          message: "The linked wallet must authorize this full CCTP batch.",
+        });
+      }
+      try {
+        await authorizeBridgeBatch({
+          user,
+          ...parsed.authorization,
+          sourceChain: CCTP_SOURCE_CHAIN,
+          destinationChain: parsed.destinationChain,
+          recipients,
+          idempotencyKey: parsed.idempotencyKey,
+        });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "TRANSACTION_UNAUTHORIZED";
+        return reply.code(code === "WALLET_NOT_LINKED" ? 403 : 401).send({
+          code,
+          message: "The signature doesn't match every recipient, amount, and network in this CCTP batch.",
+        });
+      }
+    }
+
+    const wallet = user.wallets[0];
+    if (!wallet?.vendorWalletId || wallet.vendor !== "circle_modular") {
+      return reply.code(422).send({
+        code: "CIRCLE_WALLET_REQUIRED",
+        message: "CCTP currently requires the Coretta Circle smart wallet.",
+      });
+    }
+    const existing = await prisma.bridgeBatch.findUnique({
+      where: { idempotencyKey: parsed.idempotencyKey },
+      include: { operations: { orderBy: { legIndex: "asc" } } },
+    });
+    if (existing) {
+      return reply.code(409).send({
+        code: "BRIDGE_BATCH_ALREADY_CREATED",
+        message:
+          existing.userId === user.id
+            ? "This bridge batch already exists. Resume it from Activity."
+            : "This idempotency key belongs to a different bridge batch.",
+      });
+    }
+    const assessments = await Promise.all(
+      recipients.map((recipient) =>
+        assessEvmRecipient({
+          address: recipient.recipientAddress,
+          chain: recipient.destinationChain,
+        }),
+      ),
+    );
+    const blocked = assessments.find((assessment) => !assessment.allowed);
+    if (blocked) {
+      return reply.code(422).send({
+        code: blocked.category === "contract" ? "CONTRACT_RECIPIENT_BLOCKED" : "RECIPIENT_RISK_BLOCKED",
+        message: blocked.message,
+      });
+    }
+    if (
+      recipients.some((recipient) =>
+        isOwnSmartWalletRecipient(wallet.scaAddress, recipient.recipientAddress),
+      )
+    ) {
+      const ownWalletDestinations = [
+        ...new Set(
+          recipients
+            .filter((recipient) =>
+              isOwnSmartWalletRecipient(
+                wallet.scaAddress,
+                recipient.recipientAddress,
+              ),
+            )
+            .map((recipient) => recipient.destinationChain),
+        ),
+      ];
+      if (
+        ownWalletDestinations.some(
+          (destinationChain) =>
+            !isCircleScaCctpDestination(destinationChain),
+        )
+      ) {
+        return reply.code(422).send({
+          code: "SMART_WALLET_DESTINATION_UNAVAILABLE",
+          message: SMART_WALLET_CCTP_DESTINATION_MESSAGE,
+        });
+      }
+      try {
+        for (const destinationChain of ownWalletDestinations) {
+          await ensureCircleScaDestination({
+            vendorWalletId: wallet.vendorWalletId,
+            scaAddress: wallet.scaAddress,
+            destinationChain,
+          });
+        }
+      } catch (error) {
+        log.error("cctp", "Smart wallet destination derivation failed", {
+          destinationChains: ownWalletDestinations,
+          message: error instanceof Error ? error.message : "CIRCLE_SCA_DERIVATION_FAILED",
+        });
+        return reply.code(502).send({
+          code: "SMART_WALLET_DERIVATION_FAILED",
+          message: "Coretta couldn't prepare your smart wallet on the destination network. No bridge leg was created.",
+        });
+      }
+    }
+
+    const destinationChains = [
+      ...new Set(recipients.map((recipient) => recipient.destinationChain)),
+    ];
+    const batchDestinationChain =
+      destinationChains.length === 1 ? destinationChains[0] : "MULTI";
+
+    const batch = await prisma.bridgeBatch.create({
+      data: {
+        userId: user.id,
+        idempotencyKey: parsed.idempotencyKey,
+        sourceChain: CCTP_SOURCE_CHAIN,
+        destinationChain: batchDestinationChain,
+        totalAmount,
+        status: "QUEUED",
+        operations: {
+          create: recipients.map((recipient, legIndex) => ({
+            userId: user.id,
+            idempotencyKey: randomUUID(),
+            sourceChain: CCTP_SOURCE_CHAIN,
+            destinationChain: recipient.destinationChain,
+            recipientAddress: recipient.recipientAddress.toLowerCase(),
+            amount: recipient.amount,
+            status: "QUEUED",
+            legIndex,
+          })),
+        },
+      },
+      include: { operations: { orderBy: { legIndex: "asc" } } },
+    });
+    await createAuditEvent({
+      actorId: user.id,
+      action: "CCTP_BRIDGE_BATCH_CREATED",
+      metadata: {
+        batchId: batch.id,
+        destinationChain: batch.destinationChain,
+        destinationChains,
+        totalAmount: batch.totalAmount,
+        recipientCount: batch.operations.length,
+      },
+    });
+    return reply.code(201).send({
+      ok: true,
+      batchId: batch.id,
+      status: batch.status,
+      destinationChain: batch.destinationChain,
+      totalAmount: batch.totalAmount,
+      operations: batch.operations.map((operation) => ({
+        id: operation.id,
+        legIndex: operation.legIndex,
+        recipientAddress: operation.recipientAddress,
+        amount: operation.amount,
+        destinationChain: operation.destinationChain,
+        status: operation.status,
+      })),
+    });
+  });
+
+  app.post("/v1/bridge/batches/:batchId/operations/:operationId/execute", async (req, reply) => {
+    const params = z
+      .object({ batchId: z.string().min(8).max(120), operationId: z.string().min(8).max(120) })
+      .parse(req.params);
+    const user = req.user!;
+    const operation = await prisma.bridgeOperation.findFirst({
+      where: {
+        id: params.operationId,
+        batchId: params.batchId,
+        userId: user.id,
+      },
+    });
+    if (!operation) return reply.code(404).send({ code: "BRIDGE_BATCH_LEG_NOT_FOUND" });
+    if (operation.status !== "QUEUED") {
+      return reply.code(409).send({
+        code: "BRIDGE_BATCH_LEG_ALREADY_STARTED",
+        message: "This bridge leg was already started. Check the batch status before retrying.",
+      });
+    }
+    const wallet = user.wallets[0];
+    if (!wallet?.vendorWalletId || wallet.vendor !== "circle_modular") {
+      return reply.code(422).send({ code: "CIRCLE_WALLET_REQUIRED" });
+    }
+    const assessment = await assessEvmRecipient({
+      address: operation.recipientAddress,
+      chain: operation.destinationChain,
+    });
+    if (!assessment.allowed) {
+      await prisma.bridgeOperation.update({
+        where: { id: operation.id },
+        data: { status: "FAILED", failureReason: assessment.message },
+      });
+      const aggregate = await refreshBridgeBatchStatus(params.batchId);
+      return reply.code(422).send({
+        ok: false,
+        operationId: operation.id,
+        code: "RECIPIENT_RISK_BLOCKED",
+        message: assessment.message,
+        aggregate,
+      });
+    }
+    if (isOwnSmartWalletRecipient(wallet.scaAddress, operation.recipientAddress)) {
+      if (
+        !isCctpEvmTestnetChainId(operation.destinationChain) ||
+        !isCircleScaCctpDestination(operation.destinationChain)
+      ) {
+        return reply.code(422).send({
+          code: "SMART_WALLET_DESTINATION_UNAVAILABLE",
+          message: SMART_WALLET_CCTP_DESTINATION_MESSAGE,
+        });
+      }
+      try {
+        await ensureCircleScaDestination({
+          vendorWalletId: wallet.vendorWalletId,
+          scaAddress: wallet.scaAddress,
+          destinationChain: operation.destinationChain,
+        });
+      } catch (error) {
+        log.error("cctp", "Queued smart wallet destination derivation failed", {
+          destinationChain: operation.destinationChain,
+          message: error instanceof Error ? error.message : "CIRCLE_SCA_DERIVATION_FAILED",
+        });
+        return reply.code(502).send({
+          code: "SMART_WALLET_DERIVATION_FAILED",
+          message: "Coretta couldn't prepare your smart wallet on the destination network. This bridge leg remains queued.",
+        });
+      }
+    }
+    const claimed = await prisma.bridgeOperation.updateMany({
+      where: { id: operation.id, status: "QUEUED" },
+      data: { status: "EXECUTING", failureReason: null },
+    });
+    if (claimed.count !== 1) {
+      return reply.code(409).send({
+        code: "BRIDGE_BATCH_LEG_ALREADY_STARTED",
+        message: "This bridge leg was already claimed by another request.",
+      });
+    }
+    await prisma.bridgeBatch.update({
+      where: { id: params.batchId },
+      data: { status: "EXECUTING", failureReason: null },
+    });
+
+    try {
+      const result = await executeCctpBridge({
+        walletAddress: wallet.scaAddress,
+        destinationChain: operation.destinationChain as typeof CCTP_EVM_TESTNET_DESTINATIONS[number]["id"],
+        recipientAddress: operation.recipientAddress,
+        amount: operation.amount,
+      });
+      const summary = summarizeBridgeResult(result);
+      const status =
+        summary.state === "success" ? "COMPLETE" : summary.state === "error" ? "FAILED" : "PENDING";
+      await prisma.bridgeOperation.update({
+        where: { id: operation.id },
+        data: {
+          status,
+          resultJson: serializeBridgeResult(result),
+          sourceTxHash: summary.sourceTxHash,
+          destinationTxHash: summary.destinationTxHash,
+          failureReason: summary.failureReason,
+        },
+      });
+      const aggregate = await refreshBridgeBatchStatus(params.batchId);
+      return reply.code(status === "COMPLETE" ? 200 : status === "PENDING" ? 202 : 422).send({
+        ok: status !== "FAILED",
+        batchId: params.batchId,
+        operationId: operation.id,
+        recipientAddress: operation.recipientAddress,
+        amount: operation.amount,
+        ...summary,
+        aggregate,
+      });
+    } catch (error) {
+      const failureReason =
+        error instanceof Error
+          ? error.message
+          : "The CCTP bridge leg failed before Circle returned recoverable data.";
+      await prisma.bridgeOperation.update({
+        where: { id: operation.id },
+        data: { status: "FAILED", failureReason },
+      });
+      const aggregate = await refreshBridgeBatchStatus(params.batchId);
+      return reply.code(502).send({
+        ok: false,
+        batchId: params.batchId,
+        operationId: operation.id,
+        recoverable: false,
+        failureReason,
+        aggregate,
+      });
+    }
+  });
+
+  app.get("/v1/bridge/batches/:id", async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(8).max(120) }).parse(req.params);
+    const batch = await prisma.bridgeBatch.findFirst({
+      where: { id, userId: req.user!.id },
+      include: { operations: { orderBy: { legIndex: "asc" } } },
+    });
+    if (!batch) return reply.code(404).send({ code: "BRIDGE_BATCH_NOT_FOUND" });
+    return reply.send({
+      id: batch.id,
+      status: batch.status,
+      sourceChain: batch.sourceChain,
+      destinationChain: batch.destinationChain,
+      totalAmount: batch.totalAmount,
+      failureReason: batch.failureReason,
+      operations: batch.operations.map((operation) => ({
+        id: operation.id,
+        legIndex: operation.legIndex,
+        recipientAddress: operation.recipientAddress,
+        amount: operation.amount,
+        destinationChain: operation.destinationChain,
+        status: operation.status,
+        sourceTxHash: operation.sourceTxHash,
+        destinationTxHash: operation.destinationTxHash,
+        failureReason: operation.failureReason,
+        recoverable: operation.status === "FAILED" && Boolean(operation.resultJson),
+      })),
+      createdAt: batch.createdAt.toISOString(),
+      updatedAt: batch.updatedAt.toISOString(),
+    });
+  });
+
+  app.post("/v1/bridge/batches/:id/retry", async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(8).max(120) }).parse(req.params);
+    const body = z
+      .object({
+        operationIds: z.array(z.string().min(8).max(120)).min(1).max(MAX_BATCH_RECIPIENTS),
+        authorization: transactionAuthorizationSchema.optional(),
+      })
+      .parse(req.body ?? {});
+    if (new Set(body.operationIds).size !== body.operationIds.length) {
+      return reply.code(422).send({
+        code: "DUPLICATE_BRIDGE_OPERATION",
+        message: "Each failed CCTP leg can be retried only once in this request.",
+      });
+    }
+
+    const user = req.user!;
+    const batch = await prisma.bridgeBatch.findFirst({
+      where: { id, userId: user.id },
+      include: { operations: { orderBy: { legIndex: "asc" } } },
+    });
+    if (!batch) return reply.code(404).send({ code: "BRIDGE_BATCH_NOT_FOUND" });
+    const operationsById = new Map(batch.operations.map((operation) => [operation.id, operation]));
+    const operations = body.operationIds.flatMap((operationId) => {
+      const operation = operationsById.get(operationId);
+      return operation ? [operation] : [];
+    });
+    if (operations.length !== body.operationIds.length) {
+      return reply.code(422).send({
+        code: "BRIDGE_BATCH_LEG_MISMATCH",
+        message: "One requested operation doesn't belong to this CCTP batch.",
+      });
+    }
+    const unrecoverable = operations.filter(
+      (operation) => operation.status !== "FAILED" || !operation.resultJson,
+    );
+    if (unrecoverable.length > 0) {
+      return reply.code(409).send({
+        code: "BRIDGE_BATCH_LEG_NOT_RECOVERABLE",
+        message:
+          "Only failed legs with recorded Circle recovery data can be resumed. Create a new preview for any leg without recovery data.",
+        operationIds: unrecoverable.map((operation) => operation.id),
+      });
+    }
+
+    if (requiresWalletTransactionAuthorization(user)) {
+      if (!body.authorization) {
+        return reply.code(401).send({ code: "WALLET_AUTHORIZATION_REQUIRED" });
+      }
+      try {
+        await authorizeBridgeBatchRetry({
+          user,
+          ...body.authorization,
+          batchId: id,
+          operationIds: body.operationIds,
+        });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "TRANSACTION_UNAUTHORIZED";
+        return reply.code(code === "WALLET_NOT_LINKED" ? 403 : 401).send({
+          code,
+          message: "The signature doesn't authorize these exact failed CCTP legs.",
+        });
+      }
+    }
+
+    const assessments = await Promise.all(
+      operations.map((operation) =>
+        assessEvmRecipient({
+          address: operation.recipientAddress,
+          chain: operation.destinationChain,
+        }),
+      ),
+    );
+    const blocked = assessments.find((assessment) => !assessment.allowed);
+    if (blocked) {
+      return reply.code(422).send({
+        code: "RECIPIENT_RISK_BLOCKED",
+        message: blocked.message,
+      });
+    }
+    const wallet = user.wallets[0];
+    if (!wallet?.vendorWalletId || wallet.vendor !== "circle_modular") {
+      return reply.code(422).send({ code: "CIRCLE_WALLET_REQUIRED" });
+    }
+    if (
+      operations.some((operation) =>
+        isOwnSmartWalletRecipient(wallet.scaAddress, operation.recipientAddress),
+      )
+    ) {
+      const ownWalletDestinations = [
+        ...new Set(
+          operations
+            .filter((operation) =>
+              isOwnSmartWalletRecipient(
+                wallet.scaAddress,
+                operation.recipientAddress,
+              ),
+            )
+            .map((operation) => operation.destinationChain),
+        ),
+      ];
+      if (
+        ownWalletDestinations.some(
+          (destinationChain) =>
+            !isCctpEvmTestnetChainId(destinationChain) ||
+            !isCircleScaCctpDestination(destinationChain),
+        )
+      ) {
+        return reply.code(422).send({
+          code: "SMART_WALLET_DESTINATION_UNAVAILABLE",
+          message: SMART_WALLET_CCTP_DESTINATION_MESSAGE,
+        });
+      }
+      try {
+        for (const destinationChain of ownWalletDestinations) {
+          if (!isCctpEvmTestnetChainId(destinationChain)) continue;
+          await ensureCircleScaDestination({
+            vendorWalletId: wallet.vendorWalletId,
+            scaAddress: wallet.scaAddress,
+            destinationChain,
+          });
+        }
+      } catch (error) {
+        log.error("cctp", "Batch retry smart wallet derivation failed", {
+          destinationChains: ownWalletDestinations,
+          message: error instanceof Error ? error.message : "CIRCLE_SCA_DERIVATION_FAILED",
+        });
+        return reply.code(502).send({
+          code: "SMART_WALLET_DERIVATION_FAILED",
+          message: "Coretta couldn't prepare your smart wallet on the destination network. No failed leg was retried.",
+        });
+      }
+    }
+
+    const results: Array<{
+      operationId: string;
+      state: "success" | "pending" | "error";
+      sourceTxHash?: string;
+      destinationTxHash?: string;
+      explorerUrl?: string;
+      failureReason?: string;
+    }> = [];
+    for (const operation of operations) {
+      const claimed = await prisma.bridgeOperation.updateMany({
+        where: { id: operation.id, status: "FAILED", resultJson: { not: null } },
+        data: { status: "EXECUTING", failureReason: null },
+      });
+      if (claimed.count !== 1) {
+        results.push({
+          operationId: operation.id,
+          state: "error",
+          failureReason: "This failed bridge leg was already claimed by another retry request.",
+        });
+        continue;
+      }
+      try {
+        const result = await retryCctpBridge(parseBridgeResult(operation.resultJson!));
+        const summary = summarizeBridgeResult(result);
+        const status =
+          summary.state === "success" ? "COMPLETE" : summary.state === "error" ? "FAILED" : "PENDING";
+        await prisma.bridgeOperation.update({
+          where: { id: operation.id },
+          data: {
+            status,
+            resultJson: serializeBridgeResult(result),
+            sourceTxHash: summary.sourceTxHash,
+            destinationTxHash: summary.destinationTxHash,
+            failureReason: summary.failureReason,
+          },
+        });
+        results.push({ operationId: operation.id, ...summary });
+      } catch {
+        const failureReason = "Circle couldn't resume this recoverable CCTP leg.";
+        await prisma.bridgeOperation.update({
+          where: { id: operation.id },
+          data: { status: "FAILED", failureReason },
+        });
+        results.push({ operationId: operation.id, state: "error", failureReason });
+      }
+    }
+
+    const aggregate = await refreshBridgeBatchStatus(id);
+    await createAuditEvent({
+      actorId: user.id,
+      action: "CCTP_BRIDGE_BATCH_RETRIED",
+      metadata: {
+        batchId: id,
+        operationIds: body.operationIds,
+        status: aggregate.status,
+      },
+    });
+    return reply.code(aggregate.status === "COMPLETE" ? 200 : 202).send({
+      ok: aggregate.failed === 0,
+      batchId: id,
+      results,
+      aggregate,
+    });
+  });
+
+  app.post("/v1/bridge/estimate", async (req, reply) => {
+    const parsed = cctpBridgeRequestSchema.parse(req.body);
+    if (!isCctpEvmTestnetChainId(parsed.destinationChain)) {
+      return reply.code(422).send({ code: "CCTP_ROUTE_UNAVAILABLE" });
+    }
+    try {
+      validateCctpAmount(parsed.amount);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "INVALID_AMOUNT";
+      return reply.code(422).send({
+        code,
+        message:
+          code === "AMOUNT_EXCEEDS_MAX"
+            ? "A single CCTP transfer is limited to 100 USDC."
+            : "Use a positive USDC amount with up to six decimals.",
+      });
+    }
+
+    const user = req.user!;
+    const wallet = user.wallets[0];
+    if (!wallet?.vendorWalletId || wallet.vendor !== "circle_modular") {
+      return reply.code(422).send({
+        code: "CIRCLE_WALLET_REQUIRED",
+        message: "CCTP currently requires the Coretta Circle smart wallet.",
+      });
+    }
+    if (
+      isOwnSmartWalletRecipient(wallet.scaAddress, parsed.recipientAddress) &&
+      !isCircleScaCctpDestination(parsed.destinationChain)
+    ) {
+      return reply.code(422).send({
+        code: "SMART_WALLET_DESTINATION_UNAVAILABLE",
+        message: SMART_WALLET_CCTP_DESTINATION_MESSAGE,
+      });
+    }
+    const assessment = await assessEvmRecipient({
+      address: parsed.recipientAddress,
+      chain: parsed.destinationChain,
+    });
+    if (!assessment.allowed) {
+      return reply.code(422).send({
+        code: assessment.category === "contract" ? "CONTRACT_RECIPIENT_BLOCKED" : "RECIPIENT_RISK_BLOCKED",
+        message: assessment.message,
+        assessment,
+      });
+    }
+    try {
+      const estimate = await estimateCctpBridge({
+        walletAddress: wallet.scaAddress,
+        destinationChain: parsed.destinationChain,
+        recipientAddress: parsed.recipientAddress,
+        amount: parsed.amount,
+      });
+      return reply.send({ ok: true, ...estimate });
+    } catch (error) {
+      log.warn("cctp", "Bridge estimate failed", {
+        message: error instanceof Error ? error.message : "CCTP_ESTIMATE_FAILED",
+      });
+      return reply.code(422).send({
+        code: "CCTP_ESTIMATE_FAILED",
+        message: "Coretta couldn't get a CCTP fee estimate for that route. No preview was created.",
+      });
+    }
+  });
+
+  app.post("/v1/bridge", async (req, reply) => {
+    const parsed = cctpBridgeRequestSchema
+      .extend({
+        idempotencyKey: z.string().uuid(),
+        authorization: transactionAuthorizationSchema.optional(),
+      })
+      .parse(req.body);
+    if (!isCctpEvmTestnetChainId(parsed.destinationChain)) {
+      return reply.code(422).send({ code: "CCTP_ROUTE_UNAVAILABLE" });
+    }
+    try {
+      validateCctpAmount(parsed.amount);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "INVALID_AMOUNT";
+      return reply.code(422).send({
+        code,
+        message: code === "AMOUNT_EXCEEDS_MAX" ? "A single CCTP transfer is limited to 100 USDC." : "Invalid CCTP amount.",
+      });
+    }
+
+    const user = req.user!;
+    if (requiresWalletTransactionAuthorization(user)) {
+      if (!parsed.authorization) {
+        return reply.code(401).send({
+          code: "WALLET_AUTHORIZATION_REQUIRED",
+          message: "The linked wallet must authorize this CCTP transfer.",
+        });
+      }
+      try {
+        await authorizeBridge({
+          user,
+          ...parsed.authorization,
+          sourceChain: CCTP_SOURCE_CHAIN,
+          destinationChain: parsed.destinationChain,
+          recipientAddress: parsed.recipientAddress,
+          amount: parsed.amount,
+          idempotencyKey: parsed.idempotencyKey,
+        });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "TRANSACTION_UNAUTHORIZED";
+        return reply.code(code === "WALLET_NOT_LINKED" ? 403 : 401).send({
+          code,
+          message: "The signature is invalid, expired, replayed, or doesn't match this CCTP transfer.",
+        });
+      }
+    }
+
+    const wallet = user.wallets[0];
+    if (!wallet?.vendorWalletId || wallet.vendor !== "circle_modular") {
+      return reply.code(422).send({
+        code: "CIRCLE_WALLET_REQUIRED",
+        message: "CCTP currently requires the Coretta Circle smart wallet.",
+      });
+    }
+    const existing = await prisma.bridgeOperation.findUnique({
+      where: { idempotencyKey: parsed.idempotencyKey },
+    });
+    if (existing) {
+      return reply.code(409).send({
+        code: "BRIDGE_ALREADY_SUBMITTED",
+        message:
+          existing.userId === user.id
+            ? "This CCTP transfer was already submitted. Check Activity before trying again."
+            : "This idempotency key belongs to a different operation.",
+      });
+    }
+    const assessment = await assessEvmRecipient({
+      address: parsed.recipientAddress,
+      chain: parsed.destinationChain,
+    });
+    if (!assessment.allowed) {
+      return reply.code(422).send({
+        code: assessment.category === "contract" ? "CONTRACT_RECIPIENT_BLOCKED" : "RECIPIENT_RISK_BLOCKED",
+        message: assessment.message,
+      });
+    }
+    if (isOwnSmartWalletRecipient(wallet.scaAddress, parsed.recipientAddress)) {
+      if (!isCircleScaCctpDestination(parsed.destinationChain)) {
+        return reply.code(422).send({
+          code: "SMART_WALLET_DESTINATION_UNAVAILABLE",
+          message: SMART_WALLET_CCTP_DESTINATION_MESSAGE,
+        });
+      }
+      try {
+        await ensureCircleScaDestination({
+          vendorWalletId: wallet.vendorWalletId,
+          scaAddress: wallet.scaAddress,
+          destinationChain: parsed.destinationChain,
+        });
+      } catch (error) {
+        log.error("cctp", "Smart wallet destination derivation failed", {
+          destinationChain: parsed.destinationChain,
+          message: error instanceof Error ? error.message : "CIRCLE_SCA_DERIVATION_FAILED",
+        });
+        return reply.code(502).send({
+          code: "SMART_WALLET_DERIVATION_FAILED",
+          message: "Coretta couldn't prepare your smart wallet on the destination network. The CCTP transfer was not started.",
+        });
+      }
+    }
+
+    const operation = await prisma.bridgeOperation.create({
+      data: {
+        userId: user.id,
+        idempotencyKey: parsed.idempotencyKey,
+        sourceChain: CCTP_SOURCE_CHAIN,
+        destinationChain: parsed.destinationChain,
+        recipientAddress: parsed.recipientAddress.toLowerCase(),
+        amount: parsed.amount,
+        status: "EXECUTING",
+      },
+    });
+
+    try {
+      const result = await executeCctpBridge({
+        walletAddress: wallet.scaAddress,
+        destinationChain: parsed.destinationChain,
+        recipientAddress: parsed.recipientAddress,
+        amount: parsed.amount,
+      });
+      const summary = summarizeBridgeResult(result);
+      const status = summary.state === "success" ? "COMPLETE" : summary.state === "error" ? "FAILED" : "PENDING";
+      await prisma.bridgeOperation.update({
+        where: { id: operation.id },
+        data: {
+          status,
+          resultJson: serializeBridgeResult(result),
+          sourceTxHash: summary.sourceTxHash,
+          destinationTxHash: summary.destinationTxHash,
+          failureReason: summary.failureReason,
+        },
+      });
+      await createAuditEvent({
+        actorId: user.id,
+        action: status === "COMPLETE" ? "CCTP_BRIDGE_COMPLETE" : status === "FAILED" ? "CCTP_BRIDGE_FAILED" : "CCTP_BRIDGE_PENDING",
+        metadata: {
+          operationId: operation.id,
+          destinationChain: parsed.destinationChain,
+          amount: parsed.amount,
+          sourceTxHash: summary.sourceTxHash,
+          destinationTxHash: summary.destinationTxHash,
+        },
+      });
+      return reply.code(status === "COMPLETE" ? 200 : status === "PENDING" ? 202 : 422).send({
+        ok: status !== "FAILED",
+        operationId: operation.id,
+        destinationChain: parsed.destinationChain,
+        amount: parsed.amount,
+        ...summary,
+      });
+    } catch (error) {
+      log.error("cctp", "Bridge execution failed before a recoverable result was returned", {
+        operationId: operation.id,
+        message: error instanceof Error ? error.message : "CCTP_BRIDGE_FAILED",
+      });
+      await prisma.bridgeOperation.update({
+        where: { id: operation.id },
+        data: {
+          status: "FAILED",
+          failureReason: "The CCTP transfer failed before Circle returned recoverable step data.",
+        },
+      });
+      return reply.code(502).send({
+        ok: false,
+        operationId: operation.id,
+        recoverable: false,
+        code: "CCTP_BRIDGE_FAILED",
+        message: "The CCTP transfer didn't start. Create a fresh preview before trying again.",
+      });
+    }
+  });
+
+  app.post("/v1/bridge/:id/retry", async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(8).max(120) }).parse(req.params);
+    const body = z
+      .object({ authorization: transactionAuthorizationSchema.optional() })
+      .parse(req.body ?? {});
+    const user = req.user!;
+    const operation = await prisma.bridgeOperation.findFirst({
+      where: { id, userId: user.id },
+    });
+    if (!operation) return reply.code(404).send({ code: "BRIDGE_NOT_FOUND" });
+    if (operation.status !== "FAILED" || !operation.resultJson) {
+      return reply.code(409).send({
+        code: "BRIDGE_NOT_RECOVERABLE",
+        message: "This CCTP operation has no recoverable failed step.",
+      });
+    }
+    if (requiresWalletTransactionAuthorization(user)) {
+      if (!body.authorization) {
+        return reply.code(401).send({ code: "WALLET_AUTHORIZATION_REQUIRED" });
+      }
+      try {
+        await authorizeBridgeRetry({ user, ...body.authorization, operationId: id });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "TRANSACTION_UNAUTHORIZED";
+        return reply.code(code === "WALLET_NOT_LINKED" ? 403 : 401).send({
+          code,
+          message: "The signature doesn't authorize recovery of this CCTP operation.",
+        });
+      }
+    }
+    const assessment = await assessEvmRecipient({
+      address: operation.recipientAddress,
+      chain: operation.destinationChain,
+    });
+    if (!assessment.allowed) {
+      return reply.code(422).send({ code: "RECIPIENT_RISK_BLOCKED", message: assessment.message });
+    }
+    const wallet = user.wallets[0];
+    if (!wallet?.vendorWalletId || wallet.vendor !== "circle_modular") {
+      return reply.code(422).send({ code: "CIRCLE_WALLET_REQUIRED" });
+    }
+    if (isOwnSmartWalletRecipient(wallet.scaAddress, operation.recipientAddress)) {
+      if (
+        !isCctpEvmTestnetChainId(operation.destinationChain) ||
+        !isCircleScaCctpDestination(operation.destinationChain)
+      ) {
+        return reply.code(422).send({
+          code: "SMART_WALLET_DESTINATION_UNAVAILABLE",
+          message: SMART_WALLET_CCTP_DESTINATION_MESSAGE,
+        });
+      }
+      try {
+        await ensureCircleScaDestination({
+          vendorWalletId: wallet.vendorWalletId,
+          scaAddress: wallet.scaAddress,
+          destinationChain: operation.destinationChain,
+        });
+      } catch (error) {
+        log.error("cctp", "Bridge retry smart wallet derivation failed", {
+          destinationChain: operation.destinationChain,
+          message: error instanceof Error ? error.message : "CIRCLE_SCA_DERIVATION_FAILED",
+        });
+        return reply.code(502).send({
+          code: "SMART_WALLET_DERIVATION_FAILED",
+          message: "Coretta couldn't prepare your smart wallet on the destination network. The bridge retry was not started.",
+        });
+      }
+    }
+    await prisma.bridgeOperation.update({
+      where: { id },
+      data: { status: "EXECUTING", failureReason: null },
+    });
+    try {
+      const result = await retryCctpBridge(parseBridgeResult(operation.resultJson));
+      const summary = summarizeBridgeResult(result);
+      const status = summary.state === "success" ? "COMPLETE" : summary.state === "error" ? "FAILED" : "PENDING";
+      await prisma.bridgeOperation.update({
+        where: { id },
+        data: {
+          status,
+          resultJson: serializeBridgeResult(result),
+          sourceTxHash: summary.sourceTxHash,
+          destinationTxHash: summary.destinationTxHash,
+          failureReason: summary.failureReason,
+        },
+      });
+      const aggregate = operation.batchId
+        ? await refreshBridgeBatchStatus(operation.batchId)
+        : undefined;
+      return reply.code(status === "COMPLETE" ? 200 : status === "PENDING" ? 202 : 422).send({
+        ok: status !== "FAILED",
+        operationId: id,
+        destinationChain: operation.destinationChain,
+        amount: operation.amount,
+        ...summary,
+        aggregate,
+      });
+    } catch (error) {
+      await prisma.bridgeOperation.update({
+        where: { id },
+        data: {
+          status: "FAILED",
+          failureReason: "Circle couldn't resume the recoverable CCTP step.",
+        },
+      });
+      const aggregate = operation.batchId
+        ? await refreshBridgeBatchStatus(operation.batchId)
+        : undefined;
+      return reply.code(502).send({
+        ok: false,
+        operationId: id,
+        recoverable: true,
+        code: "CCTP_RETRY_FAILED",
+        message: "The recoverable CCTP step still hasn't completed. Check Activity before retrying again.",
+        aggregate,
+      });
+    }
+  });
+
+  app.get("/v1/bridge/:id", async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(8).max(120) }).parse(req.params);
+    const operation = await prisma.bridgeOperation.findFirst({
+      where: { id, userId: req.user!.id },
+    });
+    if (!operation) return reply.code(404).send({ code: "BRIDGE_NOT_FOUND" });
+    return reply.send({
+      id: operation.id,
+      status: operation.status,
+      sourceChain: operation.sourceChain,
+      destinationChain: operation.destinationChain,
+      recipientAddress: operation.recipientAddress,
+      amount: operation.amount,
+      sourceTxHash: operation.sourceTxHash,
+      destinationTxHash: operation.destinationTxHash,
+      failureReason: operation.failureReason,
+      createdAt: operation.createdAt.toISOString(),
+      updatedAt: operation.updatedAt.toISOString(),
+    });
+  });
+
   app.post("/v1/remit", async (req, reply) => {
     const body = z
       .object({
         recipient: z.object({
-          // email optional — wallet-only remits allowed (EOA → smart wallet account)
+          // Email is optional. Wallet-only remittances from an EOA to a smart wallet are allowed.
           type: z.enum(["email", "phone", "wallet"]),
           value: z.string().min(3),
         }),
-        amount: z.string(),
+        amount: z.string().regex(/^\d+(?:\.\d{1,6})?$/),
         asset: z.enum(["USDC", "EURC"]).optional().default("USDC"),
         idempotencyKey: z.string().uuid(),
         execute: z.boolean().optional().default(true),
@@ -936,6 +2269,21 @@ export async function registerRoutes(app: FastifyInstance) {
         });
       }
     }
+    if (body.recipient.type === "wallet") {
+      const assessment = await assessEvmRecipient({
+        address: body.recipient.value,
+        chain: CCTP_SOURCE_CHAIN,
+      });
+      if (!assessment.allowed) {
+        return reply.code(422).send({
+          code:
+            assessment.category === "contract"
+              ? "CONTRACT_RECIPIENT_BLOCKED"
+              : "RECIPIENT_RISK_BLOCKED",
+          message: assessment.message,
+        });
+      }
+    }
     await createAuditEvent({
       actorId: user.id,
       action: "TRANSACTION_PREPARED",
@@ -946,14 +2294,25 @@ export async function registerRoutes(app: FastifyInstance) {
       },
     });
 
-    const transfer = await createRemittance({
-      senderUserId: user.id,
-      recipientType: body.recipient.type,
-      recipientValue: body.recipient.value,
-      amount: body.amount,
-      asset: body.asset,
-      idempotencyKey: body.idempotencyKey,
-    });
+    let transfer: Awaited<ReturnType<typeof createRemittance>>;
+    try {
+      transfer = await createRemittance({
+        senderUserId: user.id,
+        recipientType: body.recipient.type,
+        recipientValue: body.recipient.value,
+        amount: body.amount,
+        asset: body.asset,
+        idempotencyKey: body.idempotencyKey,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "IDEMPOTENCY_KEY_CONFLICT") {
+        return reply.code(409).send({
+          code: "IDEMPOTENCY_KEY_CONFLICT",
+          message: "This idempotency key belongs to a different transaction.",
+        });
+      }
+      throw error;
+    }
 
     if (transfer.state === "POLICY_DENIED") {
       return reply.code(422).send({
@@ -970,6 +2329,23 @@ export async function registerRoutes(app: FastifyInstance) {
         amountUsdc: formatMicroToUsdc(transfer.amountMicro),
         amount: formatMicroToUsdc(transfer.amountMicro),
         asset: transfer.asset,
+      });
+    }
+
+    if (transfer.recipientUserId) {
+      const approval = await queueRecipientApproval(transfer.id);
+      return reply.code(202).send({
+        transferId: transfer.id,
+        approvalId: approval?.id,
+        state: approval?.status === "PENDING" ? "PENDING_APPROVAL" : transfer.state,
+        approvalExpiresAt: approval?.expiresAt.toISOString(),
+        amountUsdc: formatMicroToUsdc(transfer.amountMicro),
+        amount: formatMicroToUsdc(transfer.amountMicro),
+        asset: transfer.asset,
+        message:
+          approval?.status === "PENDING"
+            ? "The recipient must approve this Coretta-to-Coretta payment before submission."
+            : `This approval was already ${approval?.status.toLowerCase() ?? "processed"}.`,
       });
     }
 
@@ -1014,7 +2390,7 @@ export async function registerRoutes(app: FastifyInstance) {
       return reply.code(502).send({
         transferId: transfer.id,
         state: "FAILED",
-        message,
+        message: "Coretta could not submit this transfer. Check Activity before trying again.",
       });
     }
   });
@@ -1099,6 +2475,12 @@ export async function registerRoutes(app: FastifyInstance) {
       }
     }
 
+    if (!(await consumeSwapRequestQuota(user.id, eoa))) {
+      return reply.code(429).send({
+        code: "SWAP_REQUEST_LIMIT_REACHED",
+        message: "You've reached today's swap request limit.",
+      });
+    }
     const result = await executeTokenSwap({
       userId: user.id,
       walletAddress: sca,
@@ -1119,6 +2501,371 @@ export async function registerRoutes(app: FastifyInstance) {
     }
 
     return reply.send(result);
+  });
+
+  app.post("/v1/swap/estimate", async (req, reply) => {
+    const body = z
+      .object({
+        tokenIn: z.enum(["USDC", "EURC"]),
+        tokenOut: z.enum(["USDC", "EURC"]),
+        amountIn: z.string().min(1).max(32),
+      })
+      .parse(req.body);
+    const user = req.user!;
+    const wallet = user.wallets[0];
+    const sca =
+      wallet?.scaAddress ??
+      user.identities.find((identity) => identity.type === "wallet")?.normalizedValue;
+    if (!sca) {
+      return reply.code(400).send({
+        ok: false,
+        code: "WALLET_MISSING",
+        message: "No smart wallet is available for this account.",
+      });
+    }
+    const quotaWallet =
+      user.identities.find((identity) => identity.type === "wallet")?.normalizedValue ??
+      user.wallets.find((item) => item.ownerAddress)?.ownerAddress ??
+      null;
+    if (!(await consumeSwapRequestQuota(user.id, quotaWallet))) {
+      return reply.code(429).send({
+        ok: false,
+        code: "SWAP_REQUEST_LIMIT_REACHED",
+        message: "You've reached today's swap request limit.",
+      });
+    }
+    const result = await estimateTokenSwap({
+      userId: user.id,
+      walletAddress: sca,
+      tokenIn: body.tokenIn,
+      tokenOut: body.tokenOut,
+      amountIn: body.amountIn,
+    });
+    if (!result.ok) {
+      const status =
+        result.code === "KIT_KEY_MISSING" || result.code === "CIRCLE_CONFIG_MISSING"
+          ? 503
+          : 422;
+      return reply.code(status).send(result);
+    }
+    return result;
+  });
+
+  app.post("/v1/swap-and-send", async (req, reply) => {
+    const remitRequestSchema = z.object({
+      recipient: z.object({
+        type: z.enum(["email", "phone", "wallet"]),
+        value: z.string().min(3),
+      }),
+      amount: z.string().regex(/^\d+(?:\.\d{1,6})?$/),
+      asset: z.enum(["USDC", "EURC"]),
+      idempotencyKey: z.string().uuid(),
+    });
+    const body = z
+      .object({
+        tokenIn: z.enum(["USDC", "EURC"]),
+        tokenOut: z.enum(["USDC", "EURC"]),
+        amountIn: z.string().min(1).max(32),
+        requests: z.array(remitRequestSchema).min(1).max(MAX_BATCH_RECIPIENTS),
+        authorization: transactionAuthorizationSchema.optional(),
+      })
+      .refine((value) => value.tokenIn !== value.tokenOut, {
+        message: "Source and destination assets must differ.",
+      })
+      .refine((value) => value.requests.every((item) => item.asset === value.tokenOut), {
+        message: "Every remittance must use the swap output asset.",
+      })
+      .refine(
+        (value) => {
+          const keys = value.requests.map(
+            (item) => `${item.recipient.type}:${item.recipient.value.toLowerCase()}`,
+          );
+          return new Set(keys).size === keys.length;
+        },
+        { message: "Duplicate recipients must be combined into one payment leg." },
+      )
+      .parse(req.body);
+    const user = req.user!;
+    if (requiresWalletTransactionAuthorization(user)) {
+      if (!body.authorization) {
+        return reply.code(401).send({
+          code: "WALLET_AUTHORIZATION_REQUIRED",
+          message: "The linked wallet must authorize this swap-and-send plan.",
+        });
+      }
+      try {
+        await authorizeSwapAndSend({
+          user,
+          ...body.authorization,
+          tokenIn: body.tokenIn,
+          tokenOut: body.tokenOut,
+          amountIn: body.amountIn,
+          requests: body.requests,
+        });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "TRANSACTION_UNAUTHORIZED";
+        return reply.code(code === "WALLET_NOT_LINKED" ? 403 : 401).send({
+          code,
+          message: "The signature is invalid, expired, replayed, or does not match this plan.",
+        });
+      }
+    }
+
+    const wallet = user.wallets[0];
+    const sca =
+      wallet?.scaAddress ??
+      user.identities.find((identity) => identity.type === "wallet")?.normalizedValue;
+    if (!sca) {
+      return reply.code(400).send({ code: "WALLET_MISSING", message: "No smart wallet is available." });
+    }
+    if (wallet?.vendor === "circle_modular" && wallet.vendorWalletId && wallet.counterfactual) {
+      const deployment = await ensureCircleScaDeployed(wallet);
+      if (!deployment.deployed) {
+        return reply.code(422).send({
+          code: "SMART_WALLET_DEPLOYMENT_FAILED",
+          message: deployment.error ?? "Coretta could not activate this smart wallet.",
+        });
+      }
+    }
+
+    const existingPlanLegs = await prisma.transfer.findMany({
+      where: { idempotencyKey: { in: body.requests.map((item) => item.idempotencyKey) } },
+      select: { senderUserId: true },
+    });
+    if (existingPlanLegs.length > 0) {
+      return reply.code(409).send({
+        code: "PLAN_ALREADY_SUBMITTED",
+        message: existingPlanLegs.every((item) => item.senderUserId === user.id)
+          ? "One or more payment legs were already submitted. Check Activity instead of running the swap again."
+          : "One or more idempotency keys belong to a different transaction.",
+      });
+    }
+
+    const requestedOutput = body.requests.reduce(
+      (sum, item) => sum + parseUsdcToMicro(item.amount),
+      0n,
+    );
+    if (user.status !== "ACTIVE" || user.kycTier < 1) {
+      return reply.code(422).send({
+        code: user.status !== "ACTIVE" ? "SENDER_NOT_ACTIVE" : "KYC_REQUIRED",
+        message: "The sender is not currently eligible to execute this payment plan.",
+      });
+    }
+    if (body.requests.some((item) => parseUsdcToMicro(item.amount) > MAX_TRANSFER_MICRO)) {
+      return reply.code(422).send({
+        code: "AMOUNT_EXCEEDS_MAX",
+        message: "Each payment leg must be 100 units or less.",
+      });
+    }
+    const limits = await prisma.userLimit.findUnique({ where: { userId: user.id } });
+    const reset = limits ? shouldResetDailyLimits(limits.lastResetAt) : false;
+    const sentMicro = reset ? 0n : (limits?.dailySentMicro ?? 0n);
+    const sentCount = reset ? 0 : (limits?.dailyTxCount ?? 0);
+    const sendCap =
+      limits && limits.dailySendMicro > 0n
+        ? limits.dailySendMicro
+        : DEFAULT_DAILY_SEND_LIMIT_MICRO;
+    const countCap = limits?.dailyTxLimit ?? DEFAULT_DAILY_TX_LIMIT;
+    if (sentMicro + requestedOutput > sendCap || sentCount + body.requests.length > countCap) {
+      return reply.code(422).send({
+        code: "DAILY_LIMIT_EXCEEDED",
+        message: "The payment legs in this plan exceed the sender's remaining daily limits.",
+      });
+    }
+    const knownRecipients = await Promise.all(
+      body.requests.map((item) =>
+        findUserByIdentity(item.recipient.type, item.recipient.value),
+      ),
+    );
+    if (knownRecipients.some((recipient) => recipient && recipient.status !== "ACTIVE")) {
+      return reply.code(422).send({
+        code: "RECIPIENT_NOT_ACTIVE",
+        message: "At least one known Coretta recipient is not eligible to receive this payment.",
+      });
+    }
+    const directRecipientAssessments = await Promise.all(
+      body.requests
+        .filter((item) => item.recipient.type === "wallet")
+        .map((item) =>
+          assessEvmRecipient({
+            address: item.recipient.value,
+            chain: CCTP_SOURCE_CHAIN,
+          }),
+        ),
+    );
+    const blockedRecipient = directRecipientAssessments.find(
+      (assessment) => !assessment.allowed,
+    );
+    if (blockedRecipient) {
+      return reply.code(422).send({
+        code:
+          blockedRecipient.category === "contract"
+            ? "CONTRACT_RECIPIENT_BLOCKED"
+            : "RECIPIENT_RISK_BLOCKED",
+        message: blockedRecipient.message,
+      });
+    }
+    if (
+      knownRecipients.some((recipient) => recipient?.id === user.id) ||
+      body.requests.some(
+        (item) =>
+          item.recipient.type === "wallet" &&
+          item.recipient.value.toLowerCase() === sca.toLowerCase(),
+      )
+    ) {
+      return reply.code(422).send({
+        code: "SELF_TRANSFER_NOT_ALLOWED",
+        message: "A swap-and-send plan cannot include the sender as a payment recipient.",
+      });
+    }
+    const quotaWallet =
+      user.identities.find((identity) => identity.type === "wallet")?.normalizedValue ??
+      user.wallets.find((item) => item.ownerAddress)?.ownerAddress ??
+      null;
+    if (!(await consumeSwapRequestQuota(user.id, quotaWallet))) {
+      return reply.code(429).send({
+        code: "SWAP_REQUEST_LIMIT_REACHED",
+        message: "You've reached today's swap request limit.",
+      });
+    }
+    const quote = await estimateTokenSwap({
+      userId: user.id,
+      walletAddress: sca,
+      tokenIn: body.tokenIn,
+      tokenOut: body.tokenOut,
+      amountIn: body.amountIn,
+    });
+    if (!quote.ok) return reply.code(422).send(quote);
+    if (parseUsdcToMicro(quote.amountOut) < requestedOutput) {
+      return reply.code(422).send({
+        code: "INSUFFICIENT_ESTIMATED_OUTPUT",
+        message: `The current quote returns about ${quote.amountOut} ${body.tokenOut}, less than the ${formatMicroToUsdc(requestedOutput)} ${body.tokenOut} requested for recipients.`,
+        quote,
+      });
+    }
+
+    let operation: Awaited<ReturnType<typeof prisma.swapAndSendOperation.create>>;
+    try {
+      operation = await prisma.swapAndSendOperation.create({
+        data: {
+          userId: user.id,
+          idempotencyKey: body.requests[0].idempotencyKey,
+          status: "EXECUTING",
+        },
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === "P2002") {
+        return reply.code(409).send({
+          code: "PLAN_ALREADY_SUBMITTED",
+          message: "This swap-and-send plan was already started. Check Activity before trying a new plan.",
+        });
+      }
+      throw error;
+    }
+
+    const eoaRaw =
+      user.identities.find((identity) => identity.type === "wallet")?.normalizedValue ??
+      user.wallets.find((item) => item.ownerAddress)?.ownerAddress ??
+      null;
+    let eoa: string | null = null;
+    if (eoaRaw) {
+      try {
+        eoa = normalizeWalletAddress(eoaRaw);
+      } catch {
+        eoa = eoaRaw.toLowerCase();
+      }
+    }
+    const swap = await executeTokenSwap({
+      userId: user.id,
+      walletAddress: sca,
+      tokenIn: body.tokenIn,
+      tokenOut: body.tokenOut,
+      amountIn: body.amountIn,
+      eoaAddress: eoa,
+    });
+    if (!swap.ok) {
+      await prisma.swapAndSendOperation.update({
+        where: { id: operation.id },
+        data: { status: "FAILED", failureReason: swap.message },
+      });
+      return reply.code(422).send(swap);
+    }
+    await prisma.swapAndSendOperation.update({
+      where: { id: operation.id },
+      data: { status: "SWAP_SETTLED", swapTxHash: swap.txHash },
+    });
+
+    const remittances = [];
+    for (const request of body.requests) {
+      try {
+        const transfer = await createRemittance({
+          senderUserId: user.id,
+          recipientType: request.recipient.type,
+          recipientValue: request.recipient.value,
+          amount: request.amount,
+          asset: request.asset,
+          idempotencyKey: request.idempotencyKey,
+        });
+        if (transfer.state === "POLICY_DENIED") {
+          remittances.push({
+            transferId: transfer.id,
+            state: transfer.state,
+            reason: transfer.policyReason,
+          });
+          continue;
+        }
+        if (transfer.recipientUserId) {
+          const approval = await queueRecipientApproval(transfer.id);
+          remittances.push({
+            transferId: transfer.id,
+            approvalId: approval?.id,
+            state: "PENDING_APPROVAL",
+          });
+          continue;
+        }
+        const execution = await executeRemittance(transfer.id);
+        remittances.push({
+          transferId: execution.id,
+          state: execution.state,
+          txHash: execution.txHash,
+          explorerUrl: execution.txHash
+            ? `${ARC_EXPLORER}/tx/${execution.txHash}`
+            : undefined,
+        });
+      } catch (error) {
+        const internalReason = error instanceof Error ? error.message : "REMIT_FAILED";
+        log.remit("Swap-and-send payment leg failed", {
+          operationId: operation.id,
+          message: internalReason,
+        });
+        remittances.push({
+          transferId: null,
+          state: "FAILED",
+          reason: "The payment leg could not be completed after the swap settled.",
+        });
+      }
+    }
+
+    const hasFailed = remittances.some((item) =>
+      ["FAILED", "POLICY_DENIED", "REJECTED", "EXPIRED"].includes(item.state),
+    );
+    const hasPending = remittances.some(
+      (item) => !["SETTLED", "INCLUDED", "FAILED", "POLICY_DENIED", "REJECTED", "EXPIRED"].includes(item.state),
+    );
+    await prisma.swapAndSendOperation.update({
+      where: { id: operation.id },
+      data: {
+        status: hasFailed ? "PARTIAL" : hasPending ? "PENDING" : "COMPLETE",
+        failureReason: hasFailed ? "One or more payment legs failed after the swap settled." : null,
+      },
+    });
+    return reply.code(202).send({
+      ok: true,
+      operationId: operation.id,
+      swap,
+      quote,
+      remittances,
+    });
   });
 
   app.get("/v1/transfers", async (req) => {
@@ -1157,7 +2904,7 @@ export async function registerRoutes(app: FastifyInstance) {
       .parse(req.query);
     const user = req.user!;
 
-    const [transfers, swapAudits] = await Promise.all([
+    const [transfers, swapAudits, bridgeOperations] = await Promise.all([
       prisma.transfer.findMany({
         where: {
           OR: [{ senderUserId: user.id }, { recipientUserId: user.id }],
@@ -1177,6 +2924,11 @@ export async function registerRoutes(app: FastifyInstance) {
         orderBy: { createdAt: "desc" },
         take: limit,
       }),
+      prisma.bridgeOperation.findMany({
+        where: { userId: user.id },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      }),
     ]);
 
     const transferActivity = transfers.map((transfer) => {
@@ -1184,7 +2936,7 @@ export async function registerRoutes(app: FastifyInstance) {
       const complete =
         transfer.state === "SETTLED" || transfer.state === "INCLUDED";
       const failed =
-        transfer.state === "FAILED" || transfer.state === "POLICY_DENIED";
+        ["FAILED", "POLICY_DENIED", "REJECTED", "EXPIRED"].includes(transfer.state);
       const status = complete ? "complete" : failed ? "failed" : "pending";
       const amount = formatMicroToUsdc(transfer.amountMicro);
       const verb = direction === "out" ? "Send" : "Receive";
@@ -1256,8 +3008,47 @@ export async function registerRoutes(app: FastifyInstance) {
       };
     });
 
+    const bridgeActivity = bridgeOperations.map((operation) => {
+      const status =
+        operation.status === "COMPLETE"
+          ? ("complete" as const)
+          : operation.status === "FAILED"
+            ? ("failed" as const)
+            : ("pending" as const);
+      const txHash = operation.destinationTxHash ?? operation.sourceTxHash ?? undefined;
+      const destination = listCctpEvmTestnetDestinations().find(
+        (chain) => chain.id === operation.destinationChain,
+      );
+      const explorerUrl =
+        operation.destinationTxHash && destination
+          ? destination.explorerUrl.replace("{hash}", operation.destinationTxHash)
+          : operation.sourceTxHash
+            ? `${ARC_EXPLORER}/tx/${operation.sourceTxHash}`
+            : undefined;
+      return {
+        id: `bridge_${operation.id}`,
+        kind: "bridge" as const,
+        label:
+          status === "failed"
+            ? `Failed CCTP bridge: ${operation.amount} USDC`
+            : status === "pending"
+              ? `Pending CCTP bridge: ${operation.amount} USDC`
+              : `CCTP bridge ${operation.amount} USDC`,
+        status,
+        state: operation.status,
+        createdAt: operation.createdAt.toISOString(),
+        asset: "USDC",
+        amount: operation.amount,
+        recipient: operation.recipientAddress,
+        txHash,
+        failureReason: operation.failureReason ?? undefined,
+        network: `Arc Testnet → ${destination?.label ?? operation.destinationChain}`,
+        explorerUrl,
+      };
+    });
+
     return {
-      activities: [...transferActivity, ...swapActivity]
+      activities: [...transferActivity, ...swapActivity, ...bridgeActivity]
         .sort(
           (a, b) =>
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -1290,6 +3081,110 @@ export async function registerRoutes(app: FastifyInstance) {
     };
   });
 
+  app.get("/v1/approvals", async (req) => {
+    const user = req.user!;
+    const approvals = await listApprovalsForUser(user.id);
+    return {
+      approvals: approvals.map((approval) => {
+        const incoming = approval.recipientUserId === user.id;
+        const counterparty = incoming ? approval.sender : approval.recipient;
+        const counterpartyEmail = counterparty.identities.find(
+          (identity) => identity.type === "email",
+        )?.normalizedValue;
+        return {
+          id: approval.id,
+          transferId: approval.transferId,
+          direction: incoming ? "incoming" : "outgoing",
+          status: approval.status,
+          amount: formatMicroToUsdc(approval.transfer.amountMicro),
+          asset: approval.transfer.asset,
+          counterparty:
+            counterparty.preferredName ??
+            counterpartyEmail ??
+            (incoming
+              ? approval.transfer.senderWallet.scaAddress
+              : approval.transfer.destinationAddress),
+          createdAt: approval.createdAt.toISOString(),
+          expiresAt: approval.expiresAt.toISOString(),
+          decidedAt: approval.decidedAt?.toISOString() ?? null,
+          transferState: approval.transfer.state,
+          txHash: approval.transfer.txHash,
+          explorerUrl: approval.transfer.txHash
+            ? `${ARC_EXPLORER}/tx/${approval.transfer.txHash}`
+            : undefined,
+          failureReason: approval.transfer.failureReason,
+        };
+      }),
+    };
+  });
+
+  app.post("/v1/approvals/:id/accept", async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+    const user = req.user!;
+    try {
+      const transfer = await acceptApproval({ approvalId: id, recipientUserId: user.id });
+      const execution = await executeRemittance(transfer.id);
+      return reply.code(execution.state === "SETTLED" ? 200 : 202).send({
+        ok: true,
+        transferId: execution.id,
+        state: execution.state,
+        txHash: execution.txHash,
+        explorerUrl: execution.txHash
+          ? `${ARC_EXPLORER}/tx/${execution.txHash}`
+          : undefined,
+      });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "APPROVAL_FAILED";
+      const notFound = code === "APPROVAL_NOT_FOUND";
+      const conflict = /^APPROVAL_(?:ACCEPTED|REJECTED|EXPIRED|ALREADY_DECIDED)$/.test(code);
+      return reply.code(notFound ? 404 : conflict ? 409 : 422).send({ code, message: code });
+    }
+  });
+
+  app.post("/v1/approvals/:id/reject", async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+    const user = req.user!;
+    try {
+      const transfer = await rejectApproval({ approvalId: id, recipientUserId: user.id });
+      return { ok: true, transferId: transfer.id, state: "REJECTED" };
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "APPROVAL_FAILED";
+      return reply.code(code === "APPROVAL_NOT_FOUND" ? 404 : 409).send({ code, message: code });
+    }
+  });
+
+  app.get("/v1/notifications", async (req) => {
+    const result = await listNotifications(req.user!.id);
+    return {
+      unreadCount: result.unreadCount,
+      notifications: result.items.map((item) => ({
+        id: item.id,
+        type: item.type,
+        title: item.title,
+        body: item.body,
+        transferId: item.transferId,
+        approvalId: item.approvalId,
+        read: Boolean(item.readAt),
+        createdAt: item.createdAt.toISOString(),
+      })),
+    };
+  });
+
+  app.patch("/v1/notifications/:id/read", async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+    const changed = await markNotificationRead({
+      notificationId: id,
+      userId: req.user!.id,
+    });
+    if (!changed) return reply.code(404).send({ code: "NOT_FOUND" });
+    return { ok: true };
+  });
+
+  app.post("/v1/notifications/read-all", async (req) => {
+    await markAllNotificationsRead(req.user!.id);
+    return { ok: true };
+  });
+
   // ==========================
   // Coretta AI (feedback/memory)
   // ==========================
@@ -1308,7 +3203,51 @@ export async function registerRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post("/v1/ai/conversations", async (req) => {
+  app.get("/v1/ai/session", async (req) => {
+    const actor = await getOrCreateActorForUser(req.user!.id);
+    await ensureDefaultPreferences(actor.id);
+    const [preferences, conversations] = await Promise.all([
+      getPreferences(actor.id),
+      listConversations(actor.id),
+    ]);
+    const activeSummary = conversations.find((conversation) => conversation.status === "ACTIVE");
+    const activeConversation = activeSummary
+      ? await getConversationMessages(actor.id, activeSummary.id)
+      : null;
+    return {
+      actorId: actor.id,
+      memoryEnabled: preferences.memoryEnabled !== "false",
+      personalizationEnabled: preferences.personalizationEnabled !== "false",
+      transactionHistoryEnabled: preferences.transactionHistoryEnabled === "true",
+      savedRecipientsEnabled: preferences.savedRecipientsEnabled === "true",
+      conversations: conversations.map((conversation) => ({
+        id: conversation.id,
+        title: conversation.title ?? "Untitled conversation",
+        status: conversation.status,
+        preview: conversation.messages[0]?.contentSummary ?? null,
+        messageCount: conversation._count.messages,
+        createdAt: conversation.createdAt.toISOString(),
+        updatedAt: conversation.updatedAt.toISOString(),
+      })),
+      activeConversation: activeConversation
+        ? {
+            conversation: {
+              id: activeConversation.id,
+              title: activeConversation.title ?? "Untitled conversation",
+              status: activeConversation.status,
+            },
+            messages: activeConversation.messages.map((message) => ({
+              id: message.id,
+              role: message.role,
+              content: message.content,
+              createdAt: message.createdAt.toISOString(),
+            })),
+          }
+        : null,
+    };
+  });
+
+  app.post("/v1/ai/conversations", async (req, reply) => {
     const user = req.user!;
     const body = z
       .object({
@@ -1316,16 +3255,77 @@ export async function registerRoutes(app: FastifyInstance) {
       })
       .parse(req.body);
     const actor = await getOrCreateActorForUser(user.id);
+    const recentConversationCount = await prisma.aiConversation.count({
+      where: {
+        actorId: actor.id,
+        createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+      },
+    });
+    if (recentConversationCount >= 100) {
+      return reply.code(429).send({
+        code: "AI_CONVERSATION_RATE_LIMITED",
+        message: "Too many new conversations today.",
+      });
+    }
     const convo = await createConversation(actor.id, body.title);
     return { conversationId: convo.id };
   });
 
-  app.post("/v1/ai/messages", async (req) => {
+  app.get("/v1/ai/conversations", async (req) => {
+    const actor = await getOrCreateActorForUser(req.user!.id);
+    const conversations = await listConversations(actor.id);
+    return {
+      conversations: conversations.map((conversation) => ({
+        id: conversation.id,
+        title: conversation.title ?? "Untitled conversation",
+        status: conversation.status,
+        preview: conversation.messages[0]?.contentSummary ?? null,
+        messageCount: conversation._count.messages,
+        createdAt: conversation.createdAt.toISOString(),
+        updatedAt: conversation.updatedAt.toISOString(),
+      })),
+    };
+  });
+
+  app.get("/v1/ai/conversations/:id/messages", async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+    const actor = await getOrCreateActorForUser(req.user!.id);
+    const conversation = await getConversationMessages(actor.id, id);
+    if (!conversation) return reply.code(404).send({ code: "NOT_FOUND" });
+    return {
+      conversation: {
+        id: conversation.id,
+        title: conversation.title ?? "Untitled conversation",
+        status: conversation.status,
+      },
+      messages: conversation.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt.toISOString(),
+      })),
+    };
+  });
+
+  app.patch("/v1/ai/conversations/:id", async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+    const body = z.object({ status: z.enum(["ACTIVE", "ARCHIVED"]) }).parse(req.body);
+    const actor = await getOrCreateActorForUser(req.user!.id);
+    const changed = await setConversationStatus({
+      actorId: actor.id,
+      conversationId: id,
+      status: body.status,
+    });
+    if (!changed) return reply.code(404).send({ code: "NOT_FOUND" });
+    return { ok: true };
+  });
+
+  app.post("/v1/ai/messages", async (req, reply) => {
     const user = req.user!;
     const body = z
       .object({
         conversationId: z.string().optional().nullable(),
-        role: z.enum(["user", "assistant", "system"]),
+        role: z.enum(["user", "assistant"]),
         content: z.string().min(1).max(5000),
         contentSummary: z.string().max(300).optional(),
         clientMessageId: z.string().max(80).optional(),
@@ -1333,15 +3333,17 @@ export async function registerRoutes(app: FastifyInstance) {
       .parse(req.body);
 
     const actor = await getOrCreateActorForUser(user.id);
-    if (body.role === "user") {
-      const eoa =
-        user.identities.find((i) => i.type === "wallet")?.normalizedValue ??
-        user.wallets[0]?.ownerAddress ??
-        null;
-      await trackUsageEvent({
-        walletAddress: eoa,
-        userId: user.id,
-        key: "aiRequestCount",
+    const recentMessageCount = await prisma.aiMessage.count({
+      where: {
+        actorId: actor.id,
+        createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+        deletedAt: null,
+      },
+    });
+    if (recentMessageCount >= 500) {
+      return reply.code(429).send({
+        code: "AI_MESSAGE_RATE_LIMITED",
+        message: "Too many chat messages. Try again later.",
       });
     }
     const message = await createMessage({
@@ -1355,7 +3357,7 @@ export async function registerRoutes(app: FastifyInstance) {
     return { messageId: message.id };
   });
 
-  app.post("/v1/ai/feedback", async (req) => {
+  app.post("/v1/ai/feedback", async (req, reply) => {
     const user = req.user!;
     const body = z
       .object({
@@ -1383,6 +3385,18 @@ export async function registerRoutes(app: FastifyInstance) {
       .parse(req.body);
 
     const actor = await getOrCreateActorForUser(user.id);
+    const recentFeedbackCount = await prisma.aiFeedback.count({
+      where: {
+        actorId: actor.id,
+        createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) },
+      },
+    });
+    if (recentFeedbackCount >= 50) {
+      return reply.code(429).send({
+        code: "AI_FEEDBACK_RATE_LIMITED",
+        message: "Too many feedback submissions. Try again later.",
+      });
+    }
     const feedback = await createFeedback({
       actorId: actor.id,
       kind: body.kind,
@@ -1462,12 +3476,24 @@ export async function registerRoutes(app: FastifyInstance) {
         message: z.string().trim().min(1).max(5_000),
       })
       .parse(req.body);
+    const security = assessDamianInputSecurity(body.message);
+    if (!security.allowed) {
+      return {
+        available: true,
+        reply: security.response,
+        blocked: true,
+        reason: security.code,
+      };
+    }
     if (!isDamianModelConfigured()) {
       return { available: false, reply: null };
     }
 
-    const usage = await getUserUsageMetrics(user.id);
-    if (usage.aiRequestCount > usage.aiRequestLimit) {
+    const quotaWallet =
+      user.identities.find((identity) => identity.type === "wallet")?.normalizedValue ??
+      user.wallets.find((wallet) => wallet.ownerAddress)?.ownerAddress ??
+      null;
+    if (!(await consumeAiRequestQuota(user.id, quotaWallet))) {
       return reply.code(429).send({
         code: "AI_REQUEST_LIMIT_REACHED",
         message: "You've reached today's Damian request limit.",
@@ -1662,6 +3688,12 @@ export async function registerRoutes(app: FastifyInstance) {
         since: z.string().datetime().optional(),
         until: z.string().datetime().optional(),
         destinationAddresses: z.array(z.string().min(42).max(42)).max(20).optional(),
+        direction: z.enum(["sent", "received"]).optional(),
+        asset: z.enum(["USDC", "EURC"]).optional(),
+        transferId: z.string().min(8).max(120).optional(),
+        txHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/).optional(),
+        period: z.enum(HISTORY_PERIODS).optional(),
+        timezoneOffsetMinutes: z.number().int().min(-840).max(840).default(0),
         limit: z.number().int().min(1).max(50).optional(),
       })
       .parse(req.body);
@@ -1671,12 +3703,17 @@ export async function registerRoutes(app: FastifyInstance) {
     if (preferences.transactionHistoryEnabled !== "true") {
       return reply.code(403).send({ code: "TRANSACTION_HISTORY_DISABLED" });
     }
+    const periodRange = resolveHistoryPeriod(body.period, body.timezoneOffsetMinutes);
     const transfers = await searchUserTransfers({
       userId: user.id,
+      direction: body.direction,
       states: body.states,
-      since: body.since ? new Date(body.since) : undefined,
-      until: body.until ? new Date(body.until) : undefined,
+      since: body.since ? new Date(body.since) : periodRange.since,
+      until: body.until ? new Date(body.until) : periodRange.until,
       destinationAddresses: body.destinationAddresses,
+      asset: body.asset,
+      transferId: body.transferId,
+      txHash: body.txHash,
       limit: body.limit,
     });
     return {

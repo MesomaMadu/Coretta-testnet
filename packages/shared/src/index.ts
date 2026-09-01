@@ -32,9 +32,17 @@ export const MAX_TRANSFER_MICRO = 100_000_000n; // $100.00
 export const DEFAULT_DAILY_SEND_LIMIT_MICRO = 500_000_000n; // $500/day
 export const DEFAULT_DAILY_TX_LIMIT = 50;
 
+/** Maximum recipients in one locked batch or swap-and-send plan. */
+export const MAX_BATCH_RECIPIENTS = 20;
+
+export * from "./cctp.js";
+
 export type TransferState =
   | "REQUESTED"
   | "POLICY_OK"
+  | "PENDING_APPROVAL"
+  | "REJECTED"
+  | "EXPIRED"
   | "POLICY_DENIED"
   | "BUILT"
   | "SIGNED"
@@ -63,6 +71,59 @@ export type TransactionAuthorizationIntent =
       tokenIn: "USDC" | "EURC";
       tokenOut: "USDC" | "EURC";
       amountIn: string;
+      nonce: string;
+    }
+  | {
+      action: "swap_and_send";
+      tokenIn: "USDC" | "EURC";
+      tokenOut: "USDC" | "EURC";
+      amountIn: string;
+      requests: RemitRequest[];
+      nonce: string;
+    }
+  | {
+      action: "swap_and_bridge";
+      tokenIn: "USDC" | "EURC";
+      tokenOut: "USDC";
+      amountIn: string;
+      sourceChain: "Arc_Testnet";
+      destinationChain: import("./cctp.js").CctpEvmTestnetChainId;
+      recipientAddress: string;
+      bridgeAmount: string;
+      idempotencyKey: string;
+      swapNonce: string;
+      bridgeNonce: string;
+    }
+  | {
+      action: "bridge";
+      sourceChain: "Arc_Testnet";
+      destinationChain: import("./cctp.js").CctpEvmTestnetChainId;
+      recipientAddress: string;
+      amount: string;
+      idempotencyKey: string;
+      nonce: string;
+    }
+  | {
+      action: "bridge_batch";
+      sourceChain: "Arc_Testnet";
+      destinationChain: import("./cctp.js").CctpEvmTestnetChainId;
+      recipients: Array<{
+        recipientAddress: string;
+        amount: string;
+        destinationChain: import("./cctp.js").CctpEvmTestnetChainId;
+      }>;
+      idempotencyKey: string;
+      nonce: string;
+    }
+  | {
+      action: "bridge_retry";
+      operationId: string;
+      nonce: string;
+    }
+  | {
+      action: "bridge_batch_retry";
+      batchId: string;
+      operationIds: string[];
       nonce: string;
     };
 
@@ -160,6 +221,8 @@ export interface UserUsageMetrics {
   walletCreationCount: number;
   signatureRequestCount: number;
   connectionCount: number;
+  /** Read-only CCTP status checks allowed for one bridge attempt. */
+  networkRecoveryAttemptLimit: number;
   resetInSeconds: number;
   lastResetAt: string;
   updatedAt: string;
